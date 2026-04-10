@@ -1,0 +1,13 @@
+extends: base.yaml
+
+experiment:
+  name: baseline_persistence
+  output_dir: runs/baseline_persistence
+  model_type: persistence
+
+train:
+  epochs: 1
+  stage_a_epochs: 1
+  stage_b_epochs: 0
+  max_rollout_horizon: 1
+

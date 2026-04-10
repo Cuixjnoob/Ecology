@@ -1,0 +1,7 @@
+extends: base.yaml
+
+experiment:
+  name: baseline_obs_mlp
+  output_dir: runs/baseline_obs_mlp
+  model_type: obs_mlp
+

@@ -1,0 +1,68 @@
+experiment:
+  name: eco_dynamics_base
+  seed: 42
+  output_dir: runs/eco_dynamics_base
+  model_type: full
+
+data:
+  path: ""
+  time_column: ""
+  observed_columns: []
+  covariate_columns: []
+  history_length: 16
+  horizon: 20
+  delay_length: 6
+  delay_stride: 1
+  train_ratio: 0.7
+  val_ratio: 0.15
+  batch_size: 32
+  num_workers: 0
+  synthetic:
+    enabled: true
+    total_steps: 320
+    num_observed: 5
+    num_hidden: 1
+    noise_scale: 0.02
+
+model:
+  embedding_dim: 64
+  global_dim: 64
+  edge_hidden_dim: 64
+  num_message_passing_layers: 2
+  num_hidden_nodes: 1
+  decoder_hidden_dim: 64
+  dropout: 0.1
+  use_layer_norm: true
+
+loss:
+  one_step: mse
+  lambda_1step: 1.0
+  lambda_rollout: 0.5
+  lambda_range: 0.05
+  lambda_sparse: 0.0001
+  lambda_meta: 0.0
+  lambda_smooth: 0.01
+  range_margin: 0.25
+
+train:
+  device: cpu
+  epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  early_stopping_patience: 8
+  stage_a_epochs: 5
+  stage_b_epochs: 10
+  stage_b_horizon: 5
+  max_rollout_horizon: 20
+  teacher_forcing_ratio_stage_b: 0.5
+  checkpoint_name: best.pt
+
+eval:
+  horizons: [5, 10, 20]
+  primary_horizon: 10
+  save_predictions: true
+
+viz:
+  enabled: true
+
