@@ -1,3 +1,21 @@
+"""部分观测 LV-MVP 训练器。
+
+职责：
+  - 全上下文（full-context）训练：在整条时间序列上做滚动预测
+  - 17 项损失函数的加权求和（见 compute_training_loss）
+  - 噪声退火（annealing）：随 epoch 线性衰减噪声强度
+  - 课程学习：residual_curriculum_progress 从 0 线性增长到 1
+  - 评估：train/val/test 三段分别滚动、计算 Pearson/RMSE
+
+损失项概览（由 config['loss'] 控制权重）：
+  vis_mse / vis_log_mse / vis_peak  — 可见物种预测精度
+  hid_mse / hid_corr               — 隐藏物种推断
+  env_smooth / env_mean             — 环境平滑性与均值正则
+  interaction_matrix                — 与真实交互矩阵的匹配
+  noise_penalty / lv_residual_balance / lv_drift_scale — 机制正则
+  diag_hidden_env_corr / diag_hidden_autocorr / diag_hidden_smoothness
+  diag_env_autocorr / diag_env_variation — 隐藏/环境序列诊断
+"""
 from __future__ import annotations
 
 import copy
@@ -8,7 +26,7 @@ import torch
 from torch.optim import AdamW
 
 from models.partial_lv_recovery_model import PartialLVRecoveryModel
-from train.trainer import resolve_device
+from train.utils import resolve_device
 
 
 @dataclass
@@ -44,6 +62,15 @@ def _corr_tensor(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 class PartialLVMVPTrainer:
+    """部分观测 LV 系统的全上下文训练器。
+
+    核心训练循环：
+      1. 从 split_ranges 中取 train 段，取 history_length 步作为输入
+      2. model.forward() 滚动 rollout_horizon 步
+      3. compute_training_loss() 计算 17 项加权损失
+      4. 每 epoch 更新噪声退火 & 课程进度
+      5. 验证集上评估，Early-stopping 保留最佳模型
+    """
     def __init__(
         self,
         model: PartialLVRecoveryModel,

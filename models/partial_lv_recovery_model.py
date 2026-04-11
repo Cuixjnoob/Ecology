@@ -1,3 +1,20 @@
+"""部分观测 Lotka-Volterra 隐藏物种恢复模型。
+
+核心架构（4-way rollout）：
+  1. LV drift  — 经典 Lotka-Volterra 种间交互漂移项
+  2. Neural residual — 神经网络残差项（带课程学习进度 curriculum）
+  3. Hidden-fast network — 仅作用于隐藏物种的快速修正网络
+  4. Stochastic noise — 可学习的过程噪声（visible / hidden / environment 分离）
+
+环境建模：
+  - OU (Ornstein-Uhlenbeck) 过程：env_{t+1} = env_t + tau * (target - env_t) + noise
+  - tau_env 由 sigmoid 约束在 [0.03, 0.12] 区间
+
+输入 → 输出流：
+  history_visible_raw  →  delay encoder + GRU  →  context
+  context → hidden_head / environment_head  →  初始隐藏 / 环境状态
+  rollout loop × horizon  →  4-way 叠加  →  粒子化输出
+"""
 from __future__ import annotations
 
 from typing import Dict
@@ -9,22 +26,24 @@ from models.encoders import MLP
 
 
 class PartialLVRecoveryModel(nn.Module):
+    """部分观测生态系统的隐藏物种推断与多步滚动预测模型。"""
+
     def __init__(
         self,
-        num_visible: int,
-        delay_length: int,
-        delay_stride: int,
-        delay_embedding_dim: int,
-        context_dim: int,
-        hidden_dim: int,
-        encoder_layers: int,
-        residual_layers: int,
-        use_environment_latent: bool = True,
-        use_lv_guidance: bool = False,
-        max_state_value: float = 5.5,
-        base_visible_noise: float = 0.015,
-        base_hidden_noise: float = 0.012,
-        base_environment_noise: float = 0.020,
+        num_visible: int,       # 可观测物种数（默认 5）
+        delay_length: int,      # Takens 延迟嵌入窗口长度
+        delay_stride: int,      # 延迟嵌入采样步幅
+        delay_embedding_dim: int,  # 延迟嵌入输出维度
+        context_dim: int,       # 上下文向量维度（GRU hidden size）
+        hidden_dim: int,        # MLP 隐藏层宽度
+        encoder_layers: int,    # 编码器 MLP 层数
+        residual_layers: int,   # 残差网络 MLP 层数
+        use_environment_latent: bool = True,   # 是否使用 OU 环境潜变量
+        use_lv_guidance: bool = False,         # 是否启用 LV 漂移项
+        max_state_value: float = 5.5,          # 状态值上限（物种丰度裁剪）
+        base_visible_noise: float = 0.015,     # 可见物种噪声基准
+        base_hidden_noise: float = 0.012,      # 隐藏物种噪声基准
+        base_environment_noise: float = 0.020, # 环境噪声基准
     ) -> None:
         super().__init__()
         self.num_visible = num_visible
@@ -99,21 +118,25 @@ class PartialLVRecoveryModel(nn.Module):
             num_layers=2,
             dropout=0.0,
         )
-        self.growth_rates = nn.Parameter(0.08 * torch.ones(self.total_species, dtype=torch.float32))
-        self.off_diagonal = nn.Parameter(0.035 * torch.randn(self.total_species, self.total_species))
-        self.diagonal_unconstrained = nn.Parameter(torch.full((self.total_species,), 0.32))
-        self.environment_to_species = nn.Parameter(0.04 * torch.randn(self.total_species, dtype=torch.float32))
-        self.residual_scale = nn.Parameter(torch.tensor(0.11, dtype=torch.float32))
-        self.alpha_res_unconstrained = nn.Parameter(torch.tensor(0.55, dtype=torch.float32))
-        self.alpha_lv_unconstrained = nn.Parameter(torch.tensor(0.60, dtype=torch.float32))
-        self.lv_drift_scale_unconstrained = nn.Parameter(torch.tensor(0.25, dtype=torch.float32))
-        self.tau_env_unconstrained = nn.Parameter(torch.tensor(-1.5, dtype=torch.float32))
-        self.hidden_fast_scale_unconstrained = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
-        self.residual_curriculum_progress = 0.0
+        # ---- LV 参数：种间交互矩阵 & 增长率 ----
+        self.growth_rates = nn.Parameter(0.08 * torch.ones(self.total_species, dtype=torch.float32))  # 内禀增长率 r_i
+        self.off_diagonal = nn.Parameter(0.035 * torch.randn(self.total_species, self.total_species))  # 交互系数（非对角）
+        self.diagonal_unconstrained = nn.Parameter(torch.full((self.total_species,), 0.32))  # 对角线（softplus 保证负值 → 自限制）
+        self.environment_to_species = nn.Parameter(0.04 * torch.randn(self.total_species, dtype=torch.float32))  # 环境→物种耦合
 
-        self.visible_noise_unconstrained = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))
-        self.hidden_noise_unconstrained = nn.Parameter(torch.tensor(-2.1, dtype=torch.float32))
-        self.environment_noise_unconstrained = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))
+        # ---- 4-way 混合权重 & 缩放参数 ----
+        self.residual_scale = nn.Parameter(torch.tensor(0.11, dtype=torch.float32))  # 残差网络输出缩放
+        self.alpha_res_unconstrained = nn.Parameter(torch.tensor(0.55, dtype=torch.float32))  # 残差权重 ∈ [0.08, 0.90]
+        self.alpha_lv_unconstrained = nn.Parameter(torch.tensor(0.60, dtype=torch.float32))  # LV 漂移权重 ∈ [0.10, 0.95]
+        self.lv_drift_scale_unconstrained = nn.Parameter(torch.tensor(0.25, dtype=torch.float32))  # LV 漂移幅度
+        self.tau_env_unconstrained = nn.Parameter(torch.tensor(-1.5, dtype=torch.float32))  # OU 时间常数 τ ∈ [0.03, 0.12]
+        self.hidden_fast_scale_unconstrained = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))  # 隐藏快速网络缩放
+        self.residual_curriculum_progress = 0.0  # 课程学习进度 [0, 1]，由 trainer 外部设置
+
+        # ---- 可学习过程噪声标准差（softplus 保证正值）----
+        self.visible_noise_unconstrained = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))  # 可见物种
+        self.hidden_noise_unconstrained = nn.Parameter(torch.tensor(-2.1, dtype=torch.float32))  # 隐藏物种
+        self.environment_noise_unconstrained = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))  # 环境
 
         self.visible_log_mean: torch.Tensor | None = None
         self.visible_log_std: torch.Tensor | None = None
@@ -185,13 +208,23 @@ class PartialLVRecoveryModel(nn.Module):
 
     def forward(
         self,
-        history_visible_raw: torch.Tensor,
-        rollout_horizon: int,
-        num_particles: int = 1,
-        stochastic: bool = True,
-        process_noise_scale: float = 1.0,
-        latent_perturb_scale: float = 0.0,
+        history_visible_raw: torch.Tensor,  # [B, T_hist, num_visible] 原始可见物种丰度
+        rollout_horizon: int,                 # 向前滚动预测步数
+        num_particles: int = 1,               # 随机粒子数（集成预测）
+        stochastic: bool = True,              # 是否注入过程噪声
+        process_noise_scale: float = 1.0,     # 噪声缩放因子
+        latent_perturb_scale: float = 0.0,    # 初始潜变量扰动（增加多样性）
     ) -> Dict[str, torch.Tensor]:
+        """执行多步滚动预测。
+
+        流程：
+          1. 编码历史可见序列 → context + memory_state
+          2. 从 context 推断 hidden_initial 和 environment_initial
+          3. 逐步执行 4-way rollout：
+             next = state + α_lv·LV_drift + curriculum·α_res·residual + hidden_fast + noise
+             env_next = env + τ·(target - env) + env_noise  (OU 过程)
+          4. 重塑为 [B, particles, horizon, species] 并返回粒子均值 + 诊断量
+        """
         context, memory_state = self._encode_context(history_visible_raw)
         hidden_initial = torch.nn.functional.softplus(self.hidden_head(context)) + 1e-4
         environment_initial = torch.tanh(self.environment_head(context))
@@ -302,8 +335,9 @@ class PartialLVRecoveryModel(nn.Module):
                 max=self.max_state_value,
             )
 
+            # ---- OU 环境动力学：env_{t+1} = env_t + τ·(μ(state) - env_t) + noise ----
             env_inputs = torch.cat([log_state, env_state, current_memory, static_context], dim=-1)
-            env_target = torch.tanh(self.environment_target_network(env_inputs))
+            env_target = torch.tanh(self.environment_target_network(env_inputs))  # 学习的环境吸引子 μ
             next_env_state = torch.clamp(
                 env_state + tau_env * (env_target - env_state) + env_noise,
                 min=-2.5, max=2.5,

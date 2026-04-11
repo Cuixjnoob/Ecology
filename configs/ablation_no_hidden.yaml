@@ -1,8 +1,0 @@
-extends: base.yaml
-
-experiment:
-  name: ablation_no_hidden
-  output_dir: runs/ablation_no_hidden
-
-model:
-  num_hidden_nodes: 0

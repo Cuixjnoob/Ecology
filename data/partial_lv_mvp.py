@@ -1,3 +1,15 @@
+"""合成生态系统数据生成器（部分观测 Lotka-Volterra + 环境驱动）。
+
+生成一个包含以下组件的模拟生态系统：
+  - 5 个可见物种 + 1 个隐藏物种（总计 6 物种 Lotka-Volterra 系统）
+  - 1 个 OU 环境驱动变量（温度/降水等外部因子的抽象）
+  - 1 个脉冲干扰信号（模拟极端事件）
+  - 竞争型种间交互矩阵（对角线为负的自限制项）
+  - 各物种对环境和脉冲的不同敏感系数
+
+主要函数：
+  generate_partial_lv_mvp_system(config) → PartialLVMVPSystem
+"""
 from __future__ import annotations
 
 import math

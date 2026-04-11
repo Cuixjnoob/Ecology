@@ -1,3 +1,16 @@
+"""部分观测 LV 系统的主实验入口脚本。
+
+完整流程：
+  1. 加载 YAML 配置（默认 configs/partial_lv_mvp.yaml）
+  2. 合成数据生成（5 可见 + 1 隐藏 + 1 环境，820 步）
+  3. 噪声扫描（可选）：在指定网格上搜索最优 noise profile
+  4. 模型构建 → PartialLVMVPTrainer 训练（full-context）
+  5. 评估：train/val/test 滚动指标 + 诊断图
+  6. 保存结果到 runs/<timestamp>_<tag>/
+
+使用方式：
+  python -m scripts.run_partial_lv_mvp --config configs/partial_lv_mvp.yaml
+"""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +34,7 @@ from data.dataset import build_windowed_datasets
 from data.partial_lv_mvp import generate_partial_lv_mvp_system
 from models.partial_lv_recovery_model import PartialLVRecoveryModel
 from train.partial_lv_mvp_trainer import PartialLVMVPTrainer
-from train.trainer import create_data_loaders, save_json, set_random_seed
+from train.utils import create_data_loaders, save_json, set_random_seed
 
 
 def _load_config(config_path: str | Path) -> Dict[str, Any]:

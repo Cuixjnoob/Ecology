@@ -1,6 +1,6 @@
 # CLAUDE.md — 项目入口记忆文件
 
-> 最后更新：2026-04-11  
+> 最后更新：2026-04-12（精简清理后）  
 > 维护方式：每次重大代码/实验修改后必须同步更新本文件
 
 ---
@@ -201,10 +201,10 @@ val_score = 0.30 * sliding_visible_rmse
 source .venv/bin/activate
 
 # 用原版配置运行主线实验
-python scripts/run_partial_lv_mvp.py --config configs/partial_lv_mvp.yaml
+python -m scripts.run_partial_lv_mvp --config configs/partial_lv_mvp.yaml
 
 # 用 v2 机制分离配置运行
-python scripts/run_partial_lv_mvp.py --config configs/partial_lv_mvp_v2_mechanism.yaml
+python -m scripts.run_partial_lv_mvp --config configs/partial_lv_mvp_v2_mechanism.yaml
 
 # 编译检查（不运行）
 python -m py_compile models/partial_lv_recovery_model.py
@@ -212,9 +212,6 @@ python -m py_compile train/partial_lv_mvp_trainer.py
 python -m py_compile scripts/run_partial_lv_mvp.py
 
 # 快速 smoke test（建议修改 epochs=2, noise_scan_epochs=1）
-
-# Git 同步
-bash git_sync.sh
 ```
 
 ---
@@ -232,15 +229,20 @@ bash git_sync.sh
 
 ## 十、项目文件索引
 
-| 文件 | 用途 |
-|------|------|
+| 文件/目录 | 用途 |
+|-----------|------|
 | `CLAUDE.md` | 本文件，项目入口 |
-| `notes/project_overview.md` | 项目背景与方法总览 |
-| `notes/codebase_map.md` | 代码目录与文件说明 |
-| `notes/experiment_status.md` | 实验状态与运行分类 |
-| `notes/design_decisions.md` | 关键设计决策与已否决方向 |
-| `notes/next_steps.md` | 下一步任务优先级 |
-| `codex_iteration_log.md` | Codex 4 轮迭代的完整假设→实验→结论日志（**最重要的实验决策文档**） |
+| `configs/partial_lv_mvp.yaml` | 原版配置（生产用） |
+| `configs/partial_lv_mvp_v2_mechanism.yaml` | v2 机制分离配置（实验用） |
+| `models/partial_lv_recovery_model.py` | 核心模型（4-way rollout + OU 环境） |
+| `models/encoders.py` | MLP 等基础网络构件 |
+| `train/partial_lv_mvp_trainer.py` | 全上下文训练器（17 项损失） |
+| `train/utils.py` | 工具函数（seed / data loader / save_json） |
+| `scripts/run_partial_lv_mvp.py` | 主实验入口脚本 |
+| `data/partial_lv_mvp.py` | 合成生态系统数据生成器 |
+| `data/dataset.py` | TimeSeriesBundle + 窗口采样 |
+| `data/transforms.py` | Log-ZScore 标准化 |
+| `notes/` | 项目文档（overview / codebase_map / experiment / design / next_steps） |
+| `codex_iteration_log.md` | Codex 4 轮迭代的完整实验日志（**最重要的决策文档**） |
 | `docs/research_description.md` | 研究描述文书 |
-| `eco_dynamics_codex_spec_zh.md` | 原始 Codex 项目规范 |
-| `eco_dynamics_implementation_brief_zh.md` | 实现简报 |
+| `runs/` | 保留的关键实验结果（3 个里程碑 run） |

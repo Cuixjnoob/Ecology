@@ -1,3 +1,9 @@
+"""神经网络编码器模块。
+
+提供项目中使用的基础网络构件：
+  - MLP：通用多层感知机（GELU 激活），用于模型中的各种 head
+  - ObservedDelayEncoder：Takens 延迟嵌入编码器（目前主线未直接使用）
+"""
 from __future__ import annotations
 
 from typing import List

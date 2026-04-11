@@ -1,7 +1,0 @@
-extends: base.yaml
-
-experiment:
-  name: baseline_obs_graph
-  output_dir: runs/baseline_obs_graph
-  model_type: obs_graph
-

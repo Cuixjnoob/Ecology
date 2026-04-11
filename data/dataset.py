@@ -1,3 +1,10 @@
+"""时间序列数据集与窗口采样工具。
+
+核心类型：
+  - TimeSeriesBundle：容纳观测值、协变量、元数据的标准容器
+  - WindowedTimeSeriesDataset：滑动窗口 PyTorch Dataset
+  - build_windowed_datasets()：按 train/val/test 分割生成数据集字典
+"""
 from __future__ import annotations
 
 import csv
@@ -9,7 +16,25 @@ import torch
 from torch.utils.data import Dataset
 
 from data.transforms import LogZScoreTransform
-from data.window_sampler import compute_window_end_indices
+
+
+# ---------------------------------------------------------------------------
+# 内联自 data/window_sampler.py（已删除），计算滑动窗口的结束索引列表
+# ---------------------------------------------------------------------------
+def compute_window_end_indices(
+    split_start: int,
+    split_end: int,
+    history_length: int,
+    horizon: int,
+) -> List[int]:
+    """返回在给定分割范围内所有合法滑动窗口的结束时间步索引。"""
+    if split_end <= split_start:
+        return []
+    first_end = split_start + history_length - 1
+    last_end = split_end - horizon - 1
+    if last_end < first_end:
+        return []
+    return list(range(first_end, last_end + 1))
 
 
 @dataclass
