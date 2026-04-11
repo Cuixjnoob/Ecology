@@ -1,6 +1,7 @@
 .pycache/
 __pycache__/
 .venv/
-runs/
 *.pt
+!runs/
+!runs/**
 .DS_Store

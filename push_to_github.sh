@@ -15,6 +15,10 @@ fi
 echo "==> 当前分支: $BRANCH"
 
 git add -A
+# 显式加入 runs/，这样实验结果目录也会随代码一起提交到 GitHub。
+if [[ -d runs ]]; then
+  git add runs
+fi
 
 if git diff --cached --quiet; then
   echo "没有可提交的变更。"
