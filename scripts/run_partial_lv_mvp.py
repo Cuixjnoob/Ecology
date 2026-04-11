@@ -203,6 +203,8 @@ def _lv_backbone_active(lv_guidance_metrics: Dict[str, float]) -> bool:
         lv_guidance_metrics["residual_dominates_fraction"] < 0.50
         and 0.15 <= lv_guidance_metrics["lv_residual_ratio_mean"] <= 1.5
         and lv_guidance_metrics.get("lv_energy_fraction", 0.5) >= 0.35
+        and lv_guidance_metrics.get("visible_residual_dominates_fraction", 1.0) < 0.60
+        and lv_guidance_metrics.get("visible_lv_energy_fraction", 0.0) >= 0.40
     )
 
 
@@ -575,8 +577,10 @@ def _noise_scan(
             + 0.16 * val_sliding["amplitude_collapse_score"]
             + 0.14 * val_hidden["metrics"]["hidden_recovery_rmse"]
             + 0.12 * abs(val_hidden["metrics"]["hidden_environment_correlation"])
-            + 0.05 * val_sliding["residual_dominates_fraction"]
+            + 0.04 * val_sliding["residual_dominates_fraction"]
+            + 0.06 * val_sliding["visible_residual_dominates_fraction"]
             + 0.03 * max(val_sliding["lv_residual_ratio_mean"] - 1.35, 0.0)
+            + 0.05 * max(val_sliding["visible_lv_residual_ratio_mean"] - 0.95, 0.0)
             + 0.10 * float(fit_result.best_epoch <= max(3, int(scan_config["train"]["epochs"] * 0.35)))
         )
         entry = {
@@ -589,6 +593,8 @@ def _noise_scan(
             "hidden_environment_correlation": float(val_hidden["metrics"]["hidden_environment_correlation"]),
             "residual_dominates_fraction": float(val_sliding["residual_dominates_fraction"]),
             "lv_residual_ratio_mean": float(val_sliding["lv_residual_ratio_mean"]),
+            "visible_residual_dominates_fraction": float(val_sliding["visible_residual_dominates_fraction"]),
+            "visible_lv_residual_ratio_mean": float(val_sliding["visible_lv_residual_ratio_mean"]),
             "best_epoch": int(fit_result.best_epoch),
         }
         tested_results.append(entry)
@@ -728,6 +734,10 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
         "lv_residual_ratio_mean": sliding_eval["lv_residual_ratio_mean"],
         "lv_residual_ratio_std": sliding_eval["lv_residual_ratio_std"],
         "residual_dominates_fraction": sliding_eval["residual_dominates_fraction"],
+        "lv_energy_fraction": sliding_eval["lv_energy_fraction"],
+        "visible_lv_residual_ratio_mean": sliding_eval["visible_lv_residual_ratio_mean"],
+        "visible_residual_dominates_fraction": sliding_eval["visible_residual_dominates_fraction"],
+        "visible_lv_energy_fraction": sliding_eval["visible_lv_energy_fraction"],
     }
     particle_rollout_metrics = {
         "particle_rollout_helpful": bool(

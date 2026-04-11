@@ -38,8 +38,9 @@ def _corr_tensor(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     a_centered = a - a.mean(dim=1, keepdim=True)
     b_centered = b - b.mean(dim=1, keepdim=True)
     numerator = (a_centered * b_centered).mean(dim=1)
-    denominator = torch.sqrt(a_centered.square().mean(dim=1) * b_centered.square().mean(dim=1)).clamp_min(1e-6)
-    return numerator / denominator
+    a_scale = torch.sqrt(a_centered.square().mean(dim=1) + 1e-6)
+    b_scale = torch.sqrt(b_centered.square().mean(dim=1) + 1e-6)
+    return numerator / (a_scale * b_scale)
 
 
 class PartialLVMVPTrainer:
@@ -189,8 +190,8 @@ class PartialLVMVPTrainer:
             environment_roughness = zero
             diff_correlation = zero
 
-        hidden_std = hidden_log.std(dim=1, unbiased=False).mean()
-        environment_std = environment.std(dim=1, unbiased=False).mean()
+        hidden_std = torch.sqrt(hidden_log.var(dim=1, unbiased=False) + 1e-6).mean()
+        environment_std = torch.sqrt(environment.var(dim=1, unbiased=False) + 1e-6).mean()
         return {
             "hidden_environment_correlation": hidden_correlation,
             "hidden_autocorrelation": hidden_lag,
@@ -376,10 +377,10 @@ class PartialLVMVPTrainer:
         }
 
     def _lv_terms(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        lv_contrib = outputs["lv_contribution_history"]
+        lv_contrib = outputs.get("structured_contribution_history", outputs["lv_contribution_history"])
         residual_contrib = outputs["residual_contribution_history"]
         deterministic_next = outputs["deterministic_prediction_history"]
-        lv_only_next = outputs["lv_only_prediction_history"]
+        lv_only_next = outputs.get("structured_only_prediction_history", outputs["lv_only_prediction_history"])
 
         lv_norm = lv_contrib.norm(dim=-1)
         residual_norm = residual_contrib.norm(dim=-1)
@@ -391,10 +392,25 @@ class PartialLVMVPTrainer:
         lv_energy_fraction = lv_energy / total_energy
         residual_energy_penalty = torch.relu(lv_norm.new_tensor(0.55) - lv_energy_fraction).square()
 
+        visible_lv = lv_contrib[:, :, : self.model.num_visible]
+        visible_residual = residual_contrib[:, :, : self.model.num_visible]
+        visible_lv_norm = visible_lv.norm(dim=-1)
+        visible_residual_norm = visible_residual.norm(dim=-1)
+        visible_ratio = visible_residual_norm / (visible_lv_norm + 1e-6)
+        visible_lv_energy = visible_lv_norm.square().mean()
+        visible_residual_energy = visible_residual_norm.square().mean()
+        visible_lv_energy_fraction = visible_lv_energy / (visible_lv_energy + visible_residual_energy + 1e-8)
+        visible_residual_penalty = (
+            torch.relu(visible_ratio - 0.75).square().mean()
+            + 0.9 * (visible_ratio > 0.90).float().mean()
+            + torch.relu(visible_lv_norm.new_tensor(0.60) - visible_lv_energy_fraction).square()
+        )
+
         residual_magnitude = (
-            torch.relu(residual_ratio - 0.85).square().mean()
+            0.45 * torch.relu(residual_ratio - 0.85).square().mean()
             + 0.8 * (residual_ratio > 1.0).float().mean()
             + residual_energy_penalty
+            + 1.35 * visible_residual_penalty
         )
 
         lv_guidance = torch.nn.functional.mse_loss(
@@ -406,6 +422,9 @@ class PartialLVMVPTrainer:
             "residual_magnitude": residual_magnitude,
             "residual_energy": residual_energy_penalty,
             "lv_energy_fraction": lv_energy_fraction.detach(),
+            "visible_lv_residual_ratio_mean": visible_ratio.mean().detach(),
+            "visible_residual_dominates_fraction": (visible_ratio > 1.0).float().mean().detach(),
+            "visible_lv_energy_fraction": visible_lv_energy_fraction.detach(),
         }
 
     def _particle_terms(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -582,17 +601,29 @@ class PartialLVMVPTrainer:
 
     @torch.no_grad()
     def _collect_ratio_metrics(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        lv_norm = outputs["lv_contribution_history"].norm(dim=-1)
+        structured_contrib = outputs.get("structured_contribution_history", outputs["lv_contribution_history"])
+        lv_norm = structured_contrib.norm(dim=-1)
         residual_norm = outputs["residual_contribution_history"].norm(dim=-1)
         ratio = residual_norm / (lv_norm + 1e-6)
         lv_energy = lv_norm.square().mean()
         res_energy = residual_norm.square().mean()
         lv_energy_fraction = float((lv_energy / (lv_energy + res_energy + 1e-8)).item())
+        visible_lv = structured_contrib[:, :, : self.model.num_visible]
+        visible_residual = outputs["residual_contribution_history"][:, :, : self.model.num_visible]
+        visible_lv_norm = visible_lv.norm(dim=-1)
+        visible_residual_norm = visible_residual.norm(dim=-1)
+        visible_ratio = visible_residual_norm / (visible_lv_norm + 1e-6)
+        visible_lv_energy = visible_lv_norm.square().mean()
+        visible_res_energy = visible_residual_norm.square().mean()
+        visible_lv_energy_fraction = float((visible_lv_energy / (visible_lv_energy + visible_res_energy + 1e-8)).item())
         return {
             "lv_residual_ratio_mean": float(ratio.mean().item()),
             "lv_residual_ratio_std": float(ratio.std(unbiased=False).item()),
             "residual_dominates_fraction": float((ratio > 1.0).float().mean().item()),
             "lv_energy_fraction": lv_energy_fraction,
+            "visible_lv_residual_ratio_mean": float(visible_ratio.mean().item()),
+            "visible_residual_dominates_fraction": float((visible_ratio > 1.0).float().mean().item()),
+            "visible_lv_energy_fraction": visible_lv_energy_fraction,
         }
 
     @torch.no_grad()
@@ -606,6 +637,10 @@ class PartialLVMVPTrainer:
         ratio_mean = []
         ratio_std = []
         dominate = []
+        lv_energy = []
+        visible_ratio_mean = []
+        visible_dominate = []
+        visible_lv_energy = []
 
         for batch in data_loader:
             outputs = self._forward_model(
@@ -623,6 +658,10 @@ class PartialLVMVPTrainer:
             ratio_mean.append(ratio_metrics["lv_residual_ratio_mean"])
             ratio_std.append(ratio_metrics["lv_residual_ratio_std"])
             dominate.append(ratio_metrics["residual_dominates_fraction"])
+            lv_energy.append(ratio_metrics["lv_energy_fraction"])
+            visible_ratio_mean.append(ratio_metrics["visible_lv_residual_ratio_mean"])
+            visible_dominate.append(ratio_metrics["visible_residual_dominates_fraction"])
+            visible_lv_energy.append(ratio_metrics["visible_lv_energy_fraction"])
 
         visible_pred_tensor = torch.cat(visible_pred, dim=0)
         visible_true_tensor = torch.cat(visible_true, dim=0)
@@ -646,6 +685,10 @@ class PartialLVMVPTrainer:
             "lv_residual_ratio_mean": float(sum(ratio_mean) / max(len(ratio_mean), 1)),
             "lv_residual_ratio_std": float(sum(ratio_std) / max(len(ratio_std), 1)),
             "residual_dominates_fraction": float(sum(dominate) / max(len(dominate), 1)),
+            "lv_energy_fraction": float(sum(lv_energy) / max(len(lv_energy), 1)),
+            "visible_lv_residual_ratio_mean": float(sum(visible_ratio_mean) / max(len(visible_ratio_mean), 1)),
+            "visible_residual_dominates_fraction": float(sum(visible_dominate) / max(len(visible_dominate), 1)),
+            "visible_lv_energy_fraction": float(sum(visible_lv_energy) / max(len(visible_lv_energy), 1)),
         }
 
     @torch.no_grad()

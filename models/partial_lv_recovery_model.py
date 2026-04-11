@@ -99,7 +99,6 @@ class PartialLVRecoveryModel(nn.Module):
             num_layers=2,
             dropout=0.0,
         )
-
         self.growth_rates = nn.Parameter(0.08 * torch.ones(self.total_species, dtype=torch.float32))
         self.off_diagonal = nn.Parameter(0.035 * torch.randn(self.total_species, self.total_species))
         self.diagonal_unconstrained = nn.Parameter(torch.full((self.total_species,), 0.32))
