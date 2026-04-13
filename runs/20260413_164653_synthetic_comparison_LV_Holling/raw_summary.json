@@ -1,0 +1,946 @@
+{
+  "LV": [
+    {
+      "seed": 42,
+      "pearson": 0.9059212584033882,
+      "val_recon": 0.026384323835372925,
+      "m_null": 0.027386199682950974,
+      "h_var": 0.9112463593482971,
+      "d_ratio": 1.170209338266571,
+      "recon_true": 0.0286292415112257,
+      "recon_encoder": 0.024465059861540794,
+      "recon_null": 0.0537705235183239,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.12368567287921906,
+            "coef_abs_mean": 0.12420681118965149,
+            "effective": 0.015961939468979836
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12323973327875137,
+            "coef_abs_mean": 0.1320052593946457,
+            "effective": 0.016721412539482117
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.1182299330830574,
+            "coef_abs_mean": 0.12402333319187164,
+            "effective": 0.015069755725562572
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11746824532747269,
+            "coef_abs_mean": 0.13003893196582794,
+            "effective": 0.015820611268281937
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10723795741796494,
+            "coef_abs_mean": 5.757738676948065e-07,
+            "effective": 6.174266076186541e-08
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.12392609566450119,
+            "coef_abs_mean": 0.12023071199655533,
+            "effective": 0.015422740019857883
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.1254228800535202,
+            "coef_abs_mean": 0.1429349035024643,
+            "effective": 0.018376803025603294
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.11916287243366241,
+            "coef_abs_mean": 0.12465333938598633,
+            "effective": 0.015316461212933064
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.11522474139928818,
+            "coef_abs_mean": 0.12112093716859818,
+            "effective": 0.014147555455565453
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10727246105670929,
+            "coef_abs_mean": 0.000414378650020808,
+            "effective": 4.45083060185425e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.11501389741897583,
+            "coef_abs_mean": 0.09177940338850021,
+            "effective": 0.010799678973853588
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11300922185182571,
+            "coef_abs_mean": 0.08207444101572037,
+            "effective": 0.009505386464297771
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11298488825559616,
+            "coef_abs_mean": 0.08845331519842148,
+            "effective": 0.010188024491071701
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11132533103227615,
+            "coef_abs_mean": 0.08043453097343445,
+            "effective": 0.009135611355304718
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10722420364618301,
+            "coef_abs_mean": 3.606191114613466e-07,
+            "effective": 3.8671611690688223e-08
+          }
+        }
+      },
+      "best_epoch": 298,
+      "dataset": "LV"
+    },
+    {
+      "seed": 123,
+      "pearson": 0.7382307136159553,
+      "val_recon": 0.02381754294037819,
+      "m_null": 0.03838625177741051,
+      "h_var": 0.9397878646850586,
+      "d_ratio": 2.0233998214280975,
+      "recon_true": 0.04259119927883148,
+      "recon_encoder": 0.021049324423074722,
+      "recon_null": 0.062203794717788696,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.11727214604616165,
+            "coef_abs_mean": 0.09630469977855682,
+            "effective": 0.011806432157754898
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11718611419200897,
+            "coef_abs_mean": 0.1081627681851387,
+            "effective": 0.013105366379022598
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11304722726345062,
+            "coef_abs_mean": 0.09648790955543518,
+            "effective": 0.011138771660625935
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11290990561246872,
+            "coef_abs_mean": 0.10166699439287186,
+            "effective": 0.011793948709964752
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10757143795490265,
+            "coef_abs_mean": 0.0007187359151430428,
+            "effective": 7.741864828858525e-05
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.1252719908952713,
+            "coef_abs_mean": 0.1395636796951294,
+            "effective": 0.018003694713115692
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.12284786999225616,
+            "coef_abs_mean": 0.13349583745002747,
+            "effective": 0.016987483948469162
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.11838620901107788,
+            "coef_abs_mean": 0.1288144439458847,
+            "effective": 0.015808073803782463
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.11574359983205795,
+            "coef_abs_mean": 0.10340718924999237,
+            "effective": 0.01245461031794548
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10755963623523712,
+            "coef_abs_mean": 0.0002946201420854777,
+            "effective": 3.173515506205149e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.11583799123764038,
+            "coef_abs_mean": 0.09979455173015594,
+            "effective": 0.011834484525024891
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11467541754245758,
+            "coef_abs_mean": 0.09485513716936111,
+            "effective": 0.011157390661537647
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11328539252281189,
+            "coef_abs_mean": 0.08692997694015503,
+            "effective": 0.010154597461223602
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11260826140642166,
+            "coef_abs_mean": 0.08244655281305313,
+            "effective": 0.00950157456099987
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10756183415651321,
+            "coef_abs_mean": 2.369203912166995e-06,
+            "effective": 2.5481804755145276e-07
+          }
+        }
+      },
+      "best_epoch": 277,
+      "dataset": "LV"
+    },
+    {
+      "seed": 456,
+      "pearson": 0.6756031427651782,
+      "val_recon": 0.020909618586301804,
+      "m_null": 0.03232024610042572,
+      "h_var": 0.9084898233413696,
+      "d_ratio": 6.033720165616091,
+      "recon_true": 0.11141769587993622,
+      "recon_encoder": 0.018465837463736534,
+      "recon_null": 0.053229864686727524,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.12377312034368515,
+            "coef_abs_mean": 0.12757748365402222,
+            "effective": 0.016567565500736237
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12084616720676422,
+            "coef_abs_mean": 0.1297607272863388,
+            "effective": 0.016407305374741554
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12037097662687302,
+            "coef_abs_mean": 0.1306101381778717,
+            "effective": 0.016352960839867592
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11652588844299316,
+            "coef_abs_mean": 0.11232291162014008,
+            "effective": 0.013452154584228992
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10755179077386856,
+            "coef_abs_mean": 0.0021056290715932846,
+            "effective": 0.0002267497475259006
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.12129896879196167,
+            "coef_abs_mean": 0.11830674111843109,
+            "effective": 0.015025120228528976
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.11928796768188477,
+            "coef_abs_mean": 0.1177636906504631,
+            "effective": 0.014642694033682346
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.11725088208913803,
+            "coef_abs_mean": 0.11617579311132431,
+            "effective": 0.01408434472978115
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.11666835099458694,
+            "coef_abs_mean": 0.10947325080633163,
+            "effective": 0.013212430290877819
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10755131393671036,
+            "coef_abs_mean": 0.0006809448241256177,
+            "effective": 7.332924724323675e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.11607425659894943,
+            "coef_abs_mean": 0.1002197340130806,
+            "effective": 0.01181771419942379
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11510921269655228,
+            "coef_abs_mean": 0.10130651295185089,
+            "effective": 0.0119038550183177
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11386652290821075,
+            "coef_abs_mean": 0.09533782303333282,
+            "effective": 0.011051838286221027
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11197645217180252,
+            "coef_abs_mean": 0.08625419437885284,
+            "effective": 0.00975045282393694
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10750451683998108,
+            "coef_abs_mean": 3.615745299612172e-06,
+            "effective": 3.8872104823894915e-07
+          }
+        }
+      },
+      "best_epoch": 278,
+      "dataset": "LV"
+    },
+    {
+      "seed": 789,
+      "pearson": 0.7660297065100302,
+      "val_recon": 0.020632077008485794,
+      "m_null": 0.035814639180898666,
+      "h_var": 0.920989453792572,
+      "d_ratio": 6.953274004417883,
+      "recon_true": 0.12590651214122772,
+      "recon_encoder": 0.018107514828443527,
+      "recon_null": 0.05644671618938446,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.12262891978025436,
+            "coef_abs_mean": 0.12844744324684143,
+            "effective": 0.016383999958634377
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12119367718696594,
+            "coef_abs_mean": 0.12329330295324326,
+            "effective": 0.015437135472893715
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11934386938810349,
+            "coef_abs_mean": 0.13762247562408447,
+            "effective": 0.017057886347174644
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.1159878522157669,
+            "coef_abs_mean": 0.1213616281747818,
+            "effective": 0.014355447143316269
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10753346234560013,
+            "coef_abs_mean": 2.221215027020662e-06,
+            "effective": 2.388818813869875e-07
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.12251785397529602,
+            "coef_abs_mean": 0.12041852623224258,
+            "effective": 0.015317916870117188
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.12353727221488953,
+            "coef_abs_mean": 0.1266326904296875,
+            "effective": 0.016218123957514763
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.12108322978019714,
+            "coef_abs_mean": 0.1469418853521347,
+            "effective": 0.018508821725845337
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.1172061413526535,
+            "coef_abs_mean": 0.1230262964963913,
+            "effective": 0.014947923831641674
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10756079852581024,
+            "coef_abs_mean": 0.0026325955986976624,
+            "effective": 0.0002835381601471454
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.11498899757862091,
+            "coef_abs_mean": 0.09452056139707565,
+            "effective": 0.011074825190007687
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11377569288015366,
+            "coef_abs_mean": 0.08280569314956665,
+            "effective": 0.009575990028679371
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11341935396194458,
+            "coef_abs_mean": 0.09995681792497635,
+            "effective": 0.011481411755084991
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11199291050434113,
+            "coef_abs_mean": 0.0842517837882042,
+            "effective": 0.009569847956299782
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10751546174287796,
+            "coef_abs_mean": 3.0266728572314605e-06,
+            "effective": 3.254926923546009e-07
+          }
+        }
+      },
+      "best_epoch": 284,
+      "dataset": "LV"
+    },
+    {
+      "seed": 2024,
+      "pearson": 0.6737414521615847,
+      "val_recon": 0.021729979664087296,
+      "m_null": 0.034000180661678314,
+      "h_var": 0.8577117323875427,
+      "d_ratio": 6.178334281660493,
+      "recon_true": 0.11781159043312073,
+      "recon_encoder": 0.019068503752350807,
+      "recon_null": 0.05573016032576561,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.1232127845287323,
+            "coef_abs_mean": 0.1252136379480362,
+            "effective": 0.01613069884479046
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12164797633886337,
+            "coef_abs_mean": 0.11485355347394943,
+            "effective": 0.014460832811892033
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11872592568397522,
+            "coef_abs_mean": 0.12993218004703522,
+            "effective": 0.015949513763189316
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.1151244267821312,
+            "coef_abs_mean": 0.10165123641490936,
+            "effective": 0.012074189260601997
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10741391777992249,
+            "coef_abs_mean": 0.00023292731202673167,
+            "effective": 2.505406337149907e-05
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.12691780924797058,
+            "coef_abs_mean": 0.1457938551902771,
+            "effective": 0.019116424024105072
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.12456222623586655,
+            "coef_abs_mean": 0.1299697905778885,
+            "effective": 0.016805382445454597
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.12069109082221985,
+            "coef_abs_mean": 0.1440630704164505,
+            "effective": 0.017977938055992126
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.11712796986103058,
+            "coef_abs_mean": 0.1237139105796814,
+            "effective": 0.014863338321447372
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10738656669855118,
+            "coef_abs_mean": 8.195141845135367e-07,
+            "effective": 8.800843431799876e-08
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.11668270826339722,
+            "coef_abs_mean": 0.10390294343233109,
+            "effective": 0.012300687842071056
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.11471351981163025,
+            "coef_abs_mean": 0.09649775177240372,
+            "effective": 0.011231751181185246
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.11329017579555511,
+            "coef_abs_mean": 0.09859288483858109,
+            "effective": 0.011310739442706108
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.11321738362312317,
+            "coef_abs_mean": 0.10177420824766159,
+            "effective": 0.011724799871444702
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.1073969304561615,
+            "coef_abs_mean": 6.973716040192812e-07,
+            "effective": 7.490240250263014e-08
+          }
+        }
+      },
+      "best_epoch": 294,
+      "dataset": "LV"
+    }
+  ],
+  "Holling": [
+    {
+      "seed": 42,
+      "pearson": 0.12492621437254636,
+      "val_recon": 0.17708930373191833,
+      "m_null": 0.28252097964286804,
+      "h_var": 3.6042041778564453,
+      "d_ratio": 4.756478180549981,
+      "recon_true": 0.8180966973304749,
+      "recon_encoder": 0.1719963103532791,
+      "recon_null": 0.4596102833747864,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.1326269507408142,
+            "coef_abs_mean": 0.14525912702083588,
+            "effective": 0.019621090963482857
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.13247795403003693,
+            "coef_abs_mean": 0.1310015320777893,
+            "effective": 0.017614929005503654
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.1306266486644745,
+            "coef_abs_mean": 0.1306331902742386,
+            "effective": 0.01755419373512268
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.1288929581642151,
+            "coef_abs_mean": 0.12674565613269806,
+            "effective": 0.016857990995049477
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10728839039802551,
+            "coef_abs_mean": 5.489828708959976e-06,
+            "effective": 5.891789101042377e-07
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.1286139041185379,
+            "coef_abs_mean": 0.1094706803560257,
+            "effective": 0.014728191308677197
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.13173915445804596,
+            "coef_abs_mean": 0.13133461773395538,
+            "effective": 0.01795995607972145
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.12852656841278076,
+            "coef_abs_mean": 0.11670086532831192,
+            "effective": 0.01557980291545391
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.1280830055475235,
+            "coef_abs_mean": 0.12359447777271271,
+            "effective": 0.016344452276825905
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10732271522283554,
+            "coef_abs_mean": 0.0004400586476549506,
+            "effective": 4.728750354843214e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.12393644452095032,
+            "coef_abs_mean": 0.12438687682151794,
+            "effective": 0.015726661309599876
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12335098534822464,
+            "coef_abs_mean": 0.12330058217048645,
+            "effective": 0.015419263392686844
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12375769764184952,
+            "coef_abs_mean": 0.13631215691566467,
+            "effective": 0.016987474635243416
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12213648855686188,
+            "coef_abs_mean": 0.11662494391202927,
+            "effective": 0.014537657611072063
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10727472603321075,
+            "coef_abs_mean": 3.195735644112574e-06,
+            "effective": 3.4277189797649044e-07
+          }
+        }
+      },
+      "best_epoch": 275,
+      "dataset": "Holling"
+    },
+    {
+      "seed": 123,
+      "pearson": 0.0017344960062116437,
+      "val_recon": 0.19233839213848114,
+      "m_null": 0.28995686769485474,
+      "h_var": 3.370915651321411,
+      "d_ratio": 5.0447055278188575,
+      "recon_true": 0.9459046125411987,
+      "recon_encoder": 0.18750442564487457,
+      "recon_null": 0.48229527473449707,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.1299281269311905,
+            "coef_abs_mean": 0.13102561235427856,
+            "effective": 0.01757611520588398
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.1308034062385559,
+            "coef_abs_mean": 0.12604105472564697,
+            "effective": 0.016895674169063568
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.1264144480228424,
+            "coef_abs_mean": 0.12143166363239288,
+            "effective": 0.015887735411524773
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12645357847213745,
+            "coef_abs_mean": 0.11599395424127579,
+            "effective": 0.015179245732724667
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10756853222846985,
+            "coef_abs_mean": 0.0007159609813243151,
+            "effective": 7.711779471719638e-05
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.1304377019405365,
+            "coef_abs_mean": 0.14300097525119781,
+            "effective": 0.019181378185749054
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.12802626192569733,
+            "coef_abs_mean": 0.1271098107099533,
+            "effective": 0.01673412322998047
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.12529562413692474,
+            "coef_abs_mean": 0.1235538125038147,
+            "effective": 0.016030065715312958
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.12193731963634491,
+            "coef_abs_mean": 0.09036821126937866,
+            "effective": 0.011424444615840912
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10755671560764313,
+            "coef_abs_mean": 0.0002919414546340704,
+            "effective": 3.1445888453163207e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.12175361812114716,
+            "coef_abs_mean": 0.10411196947097778,
+            "effective": 0.013053661212325096
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12162147462368011,
+            "coef_abs_mean": 0.10736911743879318,
+            "effective": 0.013356991112232208
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12130675464868546,
+            "coef_abs_mean": 0.1063806563615799,
+            "effective": 0.013168600387871265
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12043965607881546,
+            "coef_abs_mean": 0.09949414432048798,
+            "effective": 0.012288895435631275
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10755890607833862,
+            "coef_abs_mean": 2.9891466510889586e-06,
+            "effective": 3.2152573226085224e-07
+          }
+        }
+      },
+      "best_epoch": 279,
+      "dataset": "Holling"
+    },
+    {
+      "seed": 456,
+      "pearson": 0.05069481162881956,
+      "val_recon": 0.19900283217430115,
+      "m_null": 0.23979786038398743,
+      "h_var": 3.515439987182617,
+      "d_ratio": 4.599626515954171,
+      "recon_true": 0.8924682140350342,
+      "recon_encoder": 0.19403058290481567,
+      "recon_null": 0.4388006925582886,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.13051612675189972,
+            "coef_abs_mean": 0.1288502961397171,
+            "effective": 0.017389673739671707
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.13124120235443115,
+            "coef_abs_mean": 0.1394323855638504,
+            "effective": 0.018654463812708855
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.13214321434497833,
+            "coef_abs_mean": 0.14247149229049683,
+            "effective": 0.019289614632725716
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.1269715279340744,
+            "coef_abs_mean": 0.11716438084840775,
+            "effective": 0.015380811877548695
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10757119953632355,
+            "coef_abs_mean": 0.002128767082467675,
+            "effective": 0.0002292819117428735
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.13073794543743134,
+            "coef_abs_mean": 0.13877713680267334,
+            "effective": 0.018707530573010445
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.12932853400707245,
+            "coef_abs_mean": 0.12846927344799042,
+            "effective": 0.017221635207533836
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.12816943228244781,
+            "coef_abs_mean": 0.1247338280081749,
+            "effective": 0.016489302739501
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.12739203870296478,
+            "coef_abs_mean": 0.11491653323173523,
+            "effective": 0.015120971947908401
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10757072269916534,
+            "coef_abs_mean": 0.0006875175749883056,
+            "effective": 7.405028736684471e-05
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.12277169525623322,
+            "coef_abs_mean": 0.11608930677175522,
+            "effective": 0.014465424232184887
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12144563347101212,
+            "coef_abs_mean": 0.10729923844337463,
+            "effective": 0.01322301384061575
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12205304205417633,
+            "coef_abs_mean": 0.11755333840847015,
+            "effective": 0.014521983452141285
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12134956568479538,
+            "coef_abs_mean": 0.1166524812579155,
+            "effective": 0.014432646334171295
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10752375423908234,
+            "coef_abs_mean": 2.1261478195810923e-06,
+            "effective": 2.286135298845693e-07
+          }
+        }
+      },
+      "best_epoch": 284,
+      "dataset": "Holling"
+    },
+    {
+      "seed": 789,
+      "pearson": 0.922185970697862,
+      "val_recon": 0.19943198561668396,
+      "m_null": 0.24571630358695984,
+      "h_var": 3.5733280181884766,
+      "d_ratio": 1.252801271432475,
+      "recon_true": 0.24486218392848969,
+      "recon_encoder": 0.1954517364501953,
+      "recon_null": 0.4451482892036438,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.13020844757556915,
+            "coef_abs_mean": 0.12665320932865143,
+            "effective": 0.0170237198472023
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.13097664713859558,
+            "coef_abs_mean": 0.1344548463821411,
+            "effective": 0.018225694075226784
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.1284913420677185,
+            "coef_abs_mean": 0.134233295917511,
+            "effective": 0.01787867210805416
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12751315534114838,
+            "coef_abs_mean": 0.12049953639507294,
+            "effective": 0.01605868898332119
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10753033310174942,
+            "coef_abs_mean": 9.821496860240586e-07,
+            "effective": 1.0564598795781421e-07
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.12909643352031708,
+            "coef_abs_mean": 0.1223035603761673,
+            "effective": 0.016521789133548737
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.13040247559547424,
+            "coef_abs_mean": 0.11907468736171722,
+            "effective": 0.015914689749479294
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.13277168571949005,
+            "coef_abs_mean": 0.15315374732017517,
+            "effective": 0.020801277831196785
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.12936004996299744,
+            "coef_abs_mean": 0.12686863541603088,
+            "effective": 0.016897287219762802
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10755767673254013,
+            "coef_abs_mean": 0.0026268833316862583,
+            "effective": 0.0002829149889294058
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.12273229658603668,
+            "coef_abs_mean": 0.11888926476240158,
+            "effective": 0.014820452779531479
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12324616312980652,
+            "coef_abs_mean": 0.11844509094953537,
+            "effective": 0.014796345494687557
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12289468944072723,
+            "coef_abs_mean": 0.13250479102134705,
+            "effective": 0.016414565965533257
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12187027186155319,
+            "coef_abs_mean": 0.11775988340377808,
+            "effective": 0.014618033543229103
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10751231014728546,
+            "coef_abs_mean": 9.179314588436682e-07,
+            "effective": 9.871136796846258e-08
+          }
+        }
+      },
+      "best_epoch": 293,
+      "dataset": "Holling"
+    },
+    {
+      "seed": 2024,
+      "pearson": 0.019365941545227573,
+      "val_recon": 0.18067069351673126,
+      "m_null": 0.26492851972579956,
+      "h_var": 3.3924460411071777,
+      "d_ratio": 3.798406854152681,
+      "recon_true": 0.6659935712814331,
+      "recon_encoder": 0.17533497512340546,
+      "recon_null": 0.445599228143692,
+      "gate_analysis": {
+        "f_visible": {
+          "layer0_Linear": {
+            "gate_mean": 0.130451500415802,
+            "coef_abs_mean": 0.12504860758781433,
+            "effective": 0.016855420544743538
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.13070335984230042,
+            "coef_abs_mean": 0.12392426282167435,
+            "effective": 0.016687382012605667
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.1316181719303131,
+            "coef_abs_mean": 0.13749383389949799,
+            "effective": 0.01858602836728096
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.1266471892595291,
+            "coef_abs_mean": 0.11027871072292328,
+            "effective": 0.014643330127000809
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10749506205320358,
+            "coef_abs_mean": 0.0002709559048525989,
+            "effective": 2.916516677942127e-05
+          },
+          "layer1_Linear": {
+            "gate_mean": 0.13230523467063904,
+            "coef_abs_mean": 0.14178568124771118,
+            "effective": 0.019130950793623924
+          },
+          "layer1_LV_bilin": {
+            "gate_mean": 0.13077835738658905,
+            "coef_abs_mean": 0.11834774166345596,
+            "effective": 0.01602516695857048
+          },
+          "layer1_HollingII_lin": {
+            "gate_mean": 0.1328052282333374,
+            "coef_abs_mean": 0.14477063715457916,
+            "effective": 0.019740374758839607
+          },
+          "layer1_HollingII_bilin": {
+            "gate_mean": 0.12798453867435455,
+            "coef_abs_mean": 0.11618484556674957,
+            "effective": 0.015288958325982094
+          },
+          "layer1_FreeNN": {
+            "gate_mean": 0.10746771842241287,
+            "coef_abs_mean": 4.2080455386894755e-06,
+            "effective": 4.522690062458423e-07
+          }
+        },
+        "G_field": {
+          "layer0_Linear": {
+            "gate_mean": 0.12313632667064667,
+            "coef_abs_mean": 0.11477187275886536,
+            "effective": 0.014465120621025562
+          },
+          "layer0_LV_bilin": {
+            "gate_mean": 0.12221254408359528,
+            "coef_abs_mean": 0.1080009937286377,
+            "effective": 0.013419488444924355
+          },
+          "layer0_HollingII_lin": {
+            "gate_mean": 0.12194109708070755,
+            "coef_abs_mean": 0.11958497017621994,
+            "effective": 0.014794438146054745
+          },
+          "layer0_HollingII_bilin": {
+            "gate_mean": 0.12101206183433533,
+            "coef_abs_mean": 0.1155741810798645,
+            "effective": 0.014317278750240803
+          },
+          "layer0_FreeNN": {
+            "gate_mean": 0.10747824609279633,
+            "coef_abs_mean": 4.208190603094408e-06,
+            "effective": 4.5227625378174707e-07
+          }
+        }
+      },
+      "best_epoch": 276,
+      "dataset": "Holling"
+    }
+  ]
+}

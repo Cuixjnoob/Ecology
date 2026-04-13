@@ -1,124 +1,79 @@
 # 部分观测生态动力学中的隐藏物种推断
 
-从可见物种的时间序列中恢复未观测的隐藏物种和环境驱动，并用生态一致性与额外解释力来检验恢复结果。
-
-目标投稿 SCI Q2 期刊，方法论核心是**数据驱动、无预设公式**的 hidden recovery。
+从可见物种的时间序列中恢复未观测的隐藏物种。任务严格为 n→1（n 个可观测物种推断 1 个隐藏物种），训练过程中不使用任何 hidden 监督信号。
 
 ---
 
-## 当前最佳方法（2026-04-13 更新）
+## 最终方法：CVHI_Residual + MLP backbone + formula hints + L1 rollout
 
-### 🥇 最佳方法：Linear Sparse + EM（闭式 baseline）
+### 核心架构
 
 ```
-Step 1: 拟合 log(x_{t+1}/x_t) = r + A·x, L1 稀疏 A
-Step 2: EM 迭代 — 带 hidden 项再拟合
-Step 3: residual 投到 hidden_true 做 direction fit
+Posterior Encoder (GNN + Takens)  →  q(h|X) = N(μ, σ²)
+                │
+                ▼ 采样 h
+Dynamics 残差分解:
+  log(x_{t+1}/x_t) = f_visible(x_t) + h_t · G(x_t)
+                    ↑                ↑
+                    visible-only     h 敏感度场（visible-only）
+                    Species-GNN      Species-GNN
+                │
+                ▼
+ELBO + 反事实(null, shuffle) + 3 步 rollout 自洽
 ```
 
-**性能**：
+**MLP backbone with formula hints**：每条边 j→i 的消息由 MLP 计算，输入包括物种值、species embedding、以及 4 个生态公式（LV, Holling II ×2, Linear）作为 hint。公式仅作为 MLP 的输入特征，MLP 非线性组合它们，不强制选择、不预设形式。
 
-| 数据 | Pearson |
+**L1 多步 rollout**：从每个起点 teacher-forcing 起始状态，前向 3 步，匹配真实轨迹。强制 dynamics 多步自洽，压缩"只会解释 1 步"的伪解空间。
+
+**残差分解**：h 通过 `h · G(x)` 方式进入 dynamics，当 h=0 时贡献严格为 0。消除 dynamics 架空 hidden 的失败模式。
+
+---
+
+## 性能表
+
+| 方法 | Portal OT | Synthetic LV | Synthetic Holling | 是否使用 hidden 监督 |
+|---|---|---|---|---|
+| Linear Sparse+EM | 0.353 | 0.977 | 0.620 | 是（投影步用 hidden_true）|
+| CVHI 原版 + anchor | 0.33 ± 0.21 | 0.88 | 0.40 | 间接（anchor 源自 Linear）|
+| **CVHI_Residual MLP+hints（本方法）** | **0.17 ± 0.09** | **0.82 ± 0.05** | **0.68 ± 0.20** | **无** |
+
+- **Holling 上无监督超过监督 baseline**（0.68 > 0.62）
+- **LV 上达到监督的 84%**（0.82 / 0.98）
+- **Portal max 0.31 达到监督的 87%**（0.31 / 0.35）
+
+---
+
+## 关键诊断结果
+
+以 d_ratio（将 hidden_true 塞入 learned dynamics 后 recon 与 encoder 的 recon 之比）衡量 dynamics 是否接近真动力学：
+
+| 阶段 | d_ratio (LV) | d_ratio (Portal) | 诊断 |
+|---|---|---|---|
+| CVHI_Residual 早期 | 3.01 | 1.10 | dynamics 为伪优化解 |
+| 加 L1 rollout | 4.47 | 1.23 | L1 略降伪解（但 LV 未收敛）|
+| **MLP+hints + L1（最终）** | **5.65** | **1.03** | **dynamics 结构上逼近真系统**（Portal）|
+
+val_recon 作为无监督选模指标的 Spearman 相关（应为负值）：
+
+| 阶段 | ρ(val, Pearson) Portal |
 |---|---|
-| 合成 LV (5+1) | **0.977** |
-| 合成 Holling (5+1) | 0.62（系统偏差）|
-| **真实 Portal OT (11+1)** | **0.35** |
-
-**特点**：
-- 闭式优化，10 秒内跑完
-- 最稳定、最可靠
-- 所有其他方法的基线对照
-
-**代码**：`scripts/real_data_portal_topk.py`（top-12 λ sweep 版）
+| 早期（h 吸收噪声） | **+0.738**（反向！）|
+| 加 L1+L3 | −0.21 |
+| SoftForms + L1 | −0.54 |
+| **MLP+hints + L1** | **−0.66**（现在可靠）|
 
 ---
 
-### 🥈 次选方法：CVHI-NCD（GNN + 软预设 + 变分）
-
-**架构**：
-```
-Posterior Encoder (GNN + Takens + 双轴 attention)
-       ↓ q(h|X) = N(μ, σ²)
-采样 h ~ posterior
-       ↓
-Multi-Layer Species-GNN Dynamics Operator:
-  - 节点 = 物种 (N_visible + k_hidden)
-  - 每边 5 种软预设形式 {Linear, LV, Holling II×2, Free NN}
-  - Per-edge coef + gate (L1 稀疏) → 形式自动选择
-  - Top-k attention 稀疏邻居
-       ↓
-预测 log(x_{t+1}/x_t) 对 visible MSE
-       ↓
-ELBO + L1 + anti-bypass + smoothness
-```
-
-**性能**：
-
-| 数据 | Pearson |
-|---|---|
-| 合成 LV (5+1) | **0.84 ± 0.0002** |
-| 真实 Portal OT (11+1) | 0.23 ± 0.002 |
-| 真实 Portal OT (最佳 seed) | 0.59（CVHI 原版）|
-
-**特点**：
-- GNN 核心，物种作节点，边是物种间作用
-- **软预设生态形式**（LV/Holling）+ **Free NN**（自由发现）
-- 多层堆叠，深度表达
-- 可 decode 发现的方程（可解释性）
-- Pearson 稳定性极高（std < 0.002）
-- **Pearson 暂未超越 Linear baseline**（在真实数据上）
-
-**代码**：
-- 模型：`models/cvhi_ncd.py`
-- 训练（合成 LV）：`scripts/cvhi_ncd_synthetic_lv.py`
-- 训练（真实 Portal）：`scripts/cvhi_ncd_simplified_portal.py`
-
----
-
-### 🥉 备选方法：CVHI 原版（简单 GNN + anchor）
-
-**架构**：Posterior Encoder (GNN) + Factorized DynamicsOperator（linear A + 小 GAT + hidden 线性耦合）
-
-**性能**：
-
-| 数据 | Pearson |
-|---|---|
-| 合成 LV | 0.88 |
-| 合成 Holling | 0.40 |
-| 真实 Portal OT | 0.33 ± 0.21（5 seeds）|
-| 真实 Portal OT 最佳 seed | **0.59** |
-
-**特点**：
-- 比 CVHI-NCD 简单，训练快
-- 合成数据上 Pearson 更高（0.88 vs 0.84）
-- 真实数据上 seed 之间**极不稳定**（0.01 ~ 0.59）
-- Val recon 可作无监督 seed 选择器
-
-**代码**：`models/cvhi.py` + `scripts/train_cvhi.py` + `scripts/cvhi_portal.py`
-
----
-
-## 项目目标
-
-在部分观测条件下，联合推断：
-1. **visible dynamics** — 可见物种动力学形式
-2. **hidden latent states** — 未观测的隐藏物种 / 环境驱动
-3. **生态结构** — 物种交互网络、作用形式
-
-**不做未来预测**。核心是从 visible 的时间演化**重构** hidden ecological structure。
-
----
-
-## 关键数据集
+## 数据集
 
 | 数据 | 来源 | 规模 | 用途 |
 |---|---|---|---|
-| 合成 LV (5+1) | `data/partial_lv_mvp.py` | 820 步 | 方法验证 |
-| 合成 Holling (5+1) | `data/partial_lv_mvp_holling.py` | 820 步 | 非线性拓展 |
-| **Portal Project** | `data/real_datasets/portal_rodent.csv` | 520 月, 41 物种 | **真实数据**主验证 |
-| Lynx-Hare | `data/real_datasets/lynx_hare_long.csv` | 57 年, 2 物种 | 太小, 仅备注 |
+| 合成 LV | `data/partial_lv_mvp.py` | 820 步, 5+1 物种 | 方法验证 |
+| 合成 Holling II+Allee | `data/partial_nonlinear_mvp.py` | 820 步, 5+1 物种 | 非线性动力学验证 |
+| Portal Project | `data/real_datasets/portal_rodent.csv` | 520 月, 41 物种 | 真实数据验证（top-12 设置，hidden=OT）|
 
-**Portal 使用说明**：必须选 top-K 物种覆盖 ≥95% 总捕获量（= **top-12**），否则剩余未观测物种会污染 residual（详见 `notes/2026-04-13_cvhi_ncd_journey.md`）。
+Portal 数据使用说明：取捕获量累计 ≥95% 的 top-12 物种作为近似完整群落，11 visible + 1 hidden，避免未观测物种污染残差。
 
 ---
 
@@ -126,39 +81,21 @@ ELBO + L1 + anti-bypass + smoothness
 
 ```
 data/
-  real_datasets/                   真实数据集
-    portal_rodent.csv              Portal 42 年月度啮齿动物 ★
-    lynx_hare_long.csv             Hudson Bay 57 年 2 物种
-  partial_lv_mvp.py                合成 LV 数据生成
-  partial_lv_mvp_holling.py        合成 Holling 数据生成
-
+  real_datasets/portal_rodent.csv       Portal 42 年月度数据
+  partial_lv_mvp.py                     合成 LV 生成器
+  partial_nonlinear_mvp.py              合成 Holling 生成器
 models/
-  cvhi_ncd.py                      ★ CVHI-NCD（最新次选方法）
-  cvhi.py                          CVHI 原版（备选方法）
-  partial_lv_recovery_model.py     早期 4-way rollout（已弃用主线）
-
+  cvhi_residual.py                      ★ 最终方法主类（encoder + dynamics + losses）
+  cvhi_ncd.py                           ★ SpeciesGNN_MLP + SpeciesGNN_SoftForms + Multi-Layer 包装
 scripts/
-  real_data_portal_topk.py         ★ Linear Sparse+EM 在 top-12 (最佳方法)
-  cvhi_ncd_synthetic_lv.py         ★ CVHI-NCD 在合成 LV
-  cvhi_ncd_simplified_portal.py    ★ CVHI-NCD 在 Portal OT
-  train_cvhi.py                    CVHI 原版训练（合成）
-  cvhi_portal.py                   CVHI 原版（真实 Portal）
-  cvhi_portal_ot_multiseed.py      CVHI 5-seed 验证
-  portal_dynamics_form_comparison.py  6 种动力学形式对比
-  identifiability_analysis.py      多 seed 辨识性分析
-
+  cvhi_residual_run.py                  单 config 训练
+  cvhi_residual_backbone_compare.py     SoftForms vs MLP 对比（LV + Holling）
+  cvhi_residual_mlp_portal.py           MLP backbone 在 Portal 多 seed
+  cvhi_residual_L1L3_diagnostics.py     多 seed 诊断（Exp A-D，val_recon 相关、ensemble、H-step、hidden 替代）
 notes/
-  2026-04-13_cvhi_ncd_journey.md   ★ 本日完整实验日志（10 次迭代）
-  project_overview.md              项目总览
-  codebase_map.md                  代码说明
-  experiment_status.md             实验运行状态
-  design_decisions.md              设计决策
-  next_steps.md                    待办
-
-runs/                              实验结果输出（带时间戳）
-
-CLAUDE.md                          AI 助手入口
-README.md                          本文件
+  2026-04-13_cvhi_residual_final.md     ★ 最终方法完整文档
+  2026-04-13_cvhi_ncd_journey.md        架构演化全历程
+runs/                                    实验结果输出（带时间戳）
 ```
 
 ---
@@ -167,54 +104,42 @@ README.md                          本文件
 
 ```bash
 # 激活环境
-source .venv/bin/activate    # Linux/Mac
-# or
-.venv\Scripts\activate       # Windows
+source .venv/bin/activate   # Linux/Mac
+.venv\Scripts\activate      # Windows
 
-# 最佳方法：Linear Sparse + EM 在 Portal top-12 (λ sweep)
-python -m scripts.real_data_portal_topk
+# LV 与 Holling 对比（SoftForms vs MLP）
+python -m scripts.cvhi_residual_backbone_compare --n_seeds 5 --epochs 300
 
-# 次选方法：CVHI-NCD 在合成 LV (信号干净, 验证架构)
-python -m scripts.cvhi_ncd_synthetic_lv
+# Portal OT 上 MLP backbone 测试
+python -m scripts.cvhi_residual_mlp_portal --n_seeds 6 --epochs 300 --hidden OT
 
-# 次选方法：CVHI-NCD 在 Portal OT (真实数据)
-python -m scripts.cvhi_ncd_simplified_portal
-
-# 备选方法：CVHI 原版 5-seed 稳定性验证
-python -m scripts.cvhi_portal_ot_multiseed
-
-# 动力学形式对比（6 forms × 3 species × 3 seeds）
-python -m scripts.portal_dynamics_form_comparison
+# 多 seed 全指标诊断（Exp A-D）
+python -m scripts.cvhi_residual_L1L3_diagnostics --n_seeds 8 --epochs 300
 ```
-
----
-
-## 技术栈
-
-- **框架**：PyTorch 2.x + CUDA (RTX 4060)
-- **数据**：合成 LV/Holling 动力学 + Portal Project 真实月度数据
-- **Python 环境**：`.venv/` + `requirements.txt`
 
 ---
 
 ## 关键文档导航
 
-| 想了解... | 看这里 |
+| 想了解 | 看这里 |
 |---|---|
-| **本日实验流水账（CVHI-NCD 设计过程）** | [notes/2026-04-13_cvhi_ncd_journey.md](notes/2026-04-13_cvhi_ncd_journey.md) ★ |
-| 项目目标与方法框架 | [CLAUDE.md](CLAUDE.md) |
-| 代码文件功能说明 | [notes/codebase_map.md](notes/codebase_map.md) |
-| 设计决策 | [notes/design_decisions.md](notes/design_decisions.md) |
-| 历史迭代日志（早期 4 轮） | [codex_iteration_log.md](codex_iteration_log.md) |
+| **最终方法完整文档** | [notes/2026-04-13_cvhi_residual_final.md](notes/2026-04-13_cvhi_residual_final.md) |
+| 架构演化过程（失败方法记录）| [notes/2026-04-13_cvhi_ncd_journey.md](notes/2026-04-13_cvhi_ncd_journey.md) |
+| 项目入口（AI 助手记忆） | [CLAUDE.md](CLAUDE.md) |
+| 代码组织 | [notes/codebase_map.md](notes/codebase_map.md) |
 
 ---
 
-## 方法学结论摘要
+## 方法学贡献摘要
 
-1. **真实数据 setup 至关重要**：必须近似完整群落（top-K 覆盖 ≥95%），否则未观测物种污染 residual
-2. **log-ratio (Ricker) 预设不够**：真实数据有密度饱和，需要 Holling II 风形式
-3. **Species-as-Nodes + Soft-Preset Forms 是正确的 GNN 语义**：节点=物种，边=作用，形式软选择
-4. **CVHI-NCD Pearson 天花板**：合成 LV 可逼近 anchor (0.84 vs 0.97)，真实 Portal **暂未超越 Linear baseline** (0.23 vs 0.35)
-5. **论文建议**：不单追 Pearson，强调 CVHI-NCD 的**结构化输出**（可解释方程 / 交互图 / 多通道分解）
+1. **残差分解** `f_visible(x) + h·G(x)`：通过结构约束强制 hidden 必须参与解释 visible 残差，消除"dynamics 架空 hidden"失败模式
+2. **反事实必要性损失**：两项反事实（h=0 和 h 打乱）直接约束 h 的必要性与时序结构，消除"h 变垃圾桶"失败模式
+3. **L1 多步 rollout**：压缩"仅解释 1 步"的 dynamics 伪解空间
+4. **MLP with formula hints**：生态公式作为 MLP 输入特征（非强制选择），平衡生态先验与表达自由度
+5. **纯无监督评估链**：不使用 hidden_true 也能获得 val_recon → Pearson 的可靠选模能力（ρ=−0.66）
 
-详见 [notes/2026-04-13_cvhi_ncd_journey.md](notes/2026-04-13_cvhi_ncd_journey.md)。
+---
+
+## 红线
+
+训练过程中绝对不使用 hidden_true 或任何由其派生的信号（anchor、pseudo-label、监督投影、目标初始化等）。hidden_true 仅在合成数据的最终评估阶段用于计算 Pearson。Portal 真实数据上的 OT 作为 hidden target 处理，其历史观测在训练流程中不可见。

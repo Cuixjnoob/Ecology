@@ -329,6 +329,139 @@ class SpeciesGNN_SoftForms(nn.Module):
 
 
 # =============================================================================
+# Species GNN with PURE MLP messages (NO preset formulas)
+# =============================================================================
+class SpeciesGNN_MLP(nn.Module):
+    """Species-as-nodes GNN with learnable MLP edge messages.
+
+    边消息 j → i:
+      m_ij = MLP([x_i, x_j, s_i, s_j, 预设公式 as hints])
+    预设公式 (Linear, LV bilinear, Holling II × 2) 作为**额外输入特征**
+    提供给 MLP. MLP 可以选择性使用/加权/忽略/组合它们, 不强制.
+    """
+    def __init__(
+        self,
+        num_visible: int,
+        num_hidden: int = 0,
+        d_species: int = 24,
+        top_k: int = 4,
+        d_msg_hidden: int = 32,
+        use_free_nn: bool = True,  # API compat
+        free_nn_hidden: int = 32,  # API compat
+        use_formula_hints: bool = True,  # 是否把预设公式作为 MLP 输入特征
+    ):
+        super().__init__()
+        self.num_visible = num_visible
+        self.num_hidden = num_hidden
+        N = num_visible + num_hidden
+        self.N = N
+        self.top_k = min(top_k, N)
+        self.d_species = d_species
+        self.use_formula_hints = use_formula_hints
+
+        # Learnable species embeddings (distinguish species identity in MLP)
+        self.species_emb = nn.Parameter(0.1 * torch.randn(N, d_species))
+
+        # Holling saturation α per species (if using formula hints)
+        if use_formula_hints:
+            self.holling_alpha_raw = nn.Parameter(torch.zeros(N))
+
+        # Edge message MLP input:
+        #   [x_i, x_j, s_i, s_j]              = 2 + 2*d_species
+        #   + 4 formula hints (if enabled): [x_j, x_i·x_j, HollingII_lin, HollingII_bilin]
+        n_hints = 4 if use_formula_hints else 0
+        in_dim = 2 + 2 * d_species + n_hints
+        self.msg_mlp = nn.Sequential(
+            nn.Linear(in_dim, d_msg_hidden), nn.GELU(),
+            nn.Linear(d_msg_hidden, d_msg_hidden), nn.GELU(),
+            nn.Linear(d_msg_hidden, 1),
+        )
+
+        # Attention projections
+        self.q_proj = nn.Linear(1 + d_species, d_species)
+        self.k_proj = nn.Linear(1 + d_species, d_species)
+        self.temp_feat_proj = nn.Linear(d_species, d_species, bias=False)
+
+        # Intrinsic growth
+        self.r = nn.Parameter(torch.zeros(N))
+
+    def compute_messages(self, state: torch.Tensor) -> torch.Tensor:
+        """state: (B, T, N). Returns: (B, T, N, N) where [:, :, i, j] = message j→i.
+
+        如果 use_formula_hints: MLP 除了 [x_i, x_j, s_i, s_j] 还接收 4 个预设公式值作为 hints.
+        """
+        B, T, N = state.shape
+        d = self.d_species
+        xi = state.unsqueeze(-1).expand(B, T, N, N)
+        xj = state.unsqueeze(-2).expand(B, T, N, N)
+        sp = self.species_emb
+        si = sp.view(1, 1, N, 1, d).expand(B, T, N, N, d)
+        sj = sp.view(1, 1, 1, N, d).expand(B, T, N, N, d)
+        xi_e = xi.unsqueeze(-1)
+        xj_e = xj.unsqueeze(-1)
+        feats = [xi_e, xj_e, si, sj]
+
+        if self.use_formula_hints:
+            # 4 preset formula values as additional features (hints)
+            alpha = (F.softplus(self.holling_alpha_raw) + 0.01).view(1, 1, 1, N)
+            f_linear = xj_e                               # (B, T, N, N, 1)  x_j
+            f_lv = (xi * xj).unsqueeze(-1)                # x_i * x_j
+            f_holl_lin = (xj / (1 + alpha * xj)).unsqueeze(-1)          # x_j / (1+α·x_j)
+            f_holl_bi = (xi * xj / (1 + alpha * xj)).unsqueeze(-1)      # x_i·x_j / (1+α·x_j)
+            feats.extend([f_linear, f_lv, f_holl_lin, f_holl_bi])
+
+        pair = torch.cat(feats, dim=-1)  # (B, T, N, N, in_dim)
+        return self.msg_mlp(pair).squeeze(-1)
+
+    def forward(self, state: torch.Tensor,
+                 temporal_feat: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        B, T, N = state.shape
+        msgs = self.compute_messages(state)  # (B, T, N, N)
+
+        # Attention Q/K (same as SoftForms)
+        if temporal_feat is not None:
+            feats_attn = temporal_feat + self.species_emb.view(1, 1, N, -1)
+            feats = torch.cat([state.unsqueeze(-1), self.temp_feat_proj(feats_attn)], dim=-1)
+        else:
+            feats = torch.cat([state.unsqueeze(-1),
+                               self.species_emb.view(1, 1, N, -1).expand(B, T, -1, -1)],
+                              dim=-1)
+        q = self.q_proj(feats); k = self.k_proj(feats)
+        scores = torch.einsum("btnd,btmd->btnm", q, k) / (self.d_species ** 0.5)
+        if self.top_k < N:
+            tv, ti = scores.topk(self.top_k, dim=-1)
+            mask = torch.full_like(scores, float("-inf"))
+            mask.scatter_(-1, ti, tv)
+            attn = F.softmax(mask, dim=-1)
+        else:
+            attn = F.softmax(scores, dim=-1)
+
+        agg = (attn * msgs).sum(dim=-1)
+        log_ratio = self.r.view(1, 1, -1) + agg
+        return log_ratio, attn
+
+    # API compat stubs (no gates/forms in pure-MLP version)
+    def l1_gates(self) -> torch.Tensor:
+        return torch.tensor(0.0, device=self.r.device)
+
+    def l1_coefs(self) -> torch.Tensor:
+        # L2 on MLP weights instead (light regularization)
+        l2 = 0.0
+        for p in self.msg_mlp.parameters():
+            l2 = l2 + p.pow(2).mean()
+        return l2 / 4
+
+    def l1_attn(self, attn: torch.Tensor) -> torch.Tensor:
+        B, T, N, _ = attn.shape
+        mask = 1 - torch.eye(N, device=attn.device).view(1, 1, N, N)
+        return (attn * mask).abs().mean()
+
+    def hidden_to_visible_mass(self) -> torch.Tensor:
+        # N_h = 0 in CVHI_Residual usage, return 0
+        return torch.tensor(0.0, device=self.r.device)
+
+
+# =============================================================================
 # Multi-layer Species GNN (stacked SoftForms, independent params per layer)
 # =============================================================================
 class MultiLayerSpeciesGNN(nn.Module):
@@ -338,11 +471,21 @@ class MultiLayerSpeciesGNN(nn.Module):
     Each layer has independent gates/coefs/attention → different forms can activate at
     different depths (layer 1 might learn direct effects, layer 2 indirect).
     """
-    def __init__(self, num_layers: int, **layer_kwargs):
+    def __init__(self, num_layers: int, backbone: str = "softforms", **layer_kwargs):
         super().__init__()
         self.num_layers = num_layers
+        self.backbone = backbone
+        if backbone == "softforms":
+            LayerCls = SpeciesGNN_SoftForms
+        elif backbone == "mlp":
+            LayerCls = SpeciesGNN_MLP
+            # MLP backbone doesn't use these args — strip them
+            layer_kwargs = {k: v for k, v in layer_kwargs.items()
+                             if k not in ("gate_init",)}
+        else:
+            raise ValueError(f"Unknown backbone: {backbone}")
         self.layers = nn.ModuleList([
-            SpeciesGNN_SoftForms(**layer_kwargs) for _ in range(num_layers)
+            LayerCls(**layer_kwargs) for _ in range(num_layers)
         ])
 
     def forward(self, state, temporal_feat=None):

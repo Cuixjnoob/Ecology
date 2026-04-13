@@ -1,249 +1,155 @@
 # CLAUDE.md — 项目入口记忆文件
 
-> 最后更新：2026-04-12（方法论转向：从预测到重构，hidden recovery-centric）  
-> 维护方式：每次重大代码/实验修改后必须同步更新本文件
+> 最后更新：2026-04-13（CVHI_Residual + MLP backbone + formula hints + L1 rollout 定型）
 
 ---
 
 ## 一、项目一句话
 
-**部分观测生态动力学中的隐藏物种推断与生态一致性建模。**  
-核心是从 visible dynamics 中恢复 hidden ecological structure，并用生态一致性与额外解释力来检验其有效性。
-**不做未来预测。** Visible rollout 仅作为训练信号（在已知数据内重构），评估以 hidden recovery quality 为核心。
+**部分观测生态动力学中的隐藏物种推断**：从 n 个 visible 物种时间序列恢复 1 个 hidden 物种，不预设动力学公式，严格无 hidden 监督。
 
 ---
 
-## 二、当前主线
+## 二、当前方法（已定型）
 
-### 主线脚本
-- **入口**：`scripts/run_partial_lv_mvp.py`
-- **模型**：`models/partial_lv_recovery_model.py` → `PartialLVRecoveryModel`
-- **训练**：`train/partial_lv_mvp_trainer.py` → `PartialLVMVPTrainer`
-- **配置**：
-  - `configs/partial_lv_mvp.yaml`（原版，生产用）
-  - `configs/partial_lv_mvp_v2_mechanism.yaml`（v2 机制分离版，实验用）
+### CVHI_Residual + MLP backbone + formula hints + L1 rollout
 
-### 当前架构：四路分工
-模型状态更新公式（每个 rollout step）：
-
+**核心架构**：
 ```
-state_{t+1} = state_t
-    + α_lv  × LV_guided_drift           ← 结构化生态先验（Lotka-Volterra）
-    + α_res × curriculum × residual      ← 神经残差网络（curriculum 控制强度渐进）
-    + hidden_fast_scale × hidden_fast    ← 仅作用于 hidden species 的快创新网络
-    + noise                              ← 过程噪声（可关闭）
+Posterior Encoder (GNN + Takens)
+    ↓ q(h|X) = N(μ, σ²)
+Dynamics:  log(x_{t+1}/x_t) = f_visible(x_t) + h_t · G(x_t)
+    │        (两个 Species-GNN, MLP backbone)
+    ▼
+Loss: recon + rollout(3-step) + 反事实(null, shuffle) + KL + sparsity
 ```
 
-环境状态更新（OU 过程）：
-```
-env_{t+1} = env_t + τ_env × (target - env_t) + noise
-```
-其中 `target` 由 `environment_target_network` 输出，`τ_env ∈ [0.03, 0.12]` 可学习。这一设计使环境成为慢变量（relaxation toward target），而非直接预测。
+**MLP backbone with formula hints**：每条边 j→i 的消息由 MLP 从 `[x_i, x_j, s_i, s_j, LV_hint, Holling_lin_hint, Holling_bi_hint, linear_hint]` 计算。公式仅作为输入特征，不强制选择。
 
-### 关键可学习参数
-| 参数 | 含义 | 约束范围 |
-|------|------|----------|
-| `alpha_lv` | LV 贡献权重 | [0.10, 0.95] via sigmoid |
-| `alpha_res` | residual 贡献权重 | [0.08, 0.90] via sigmoid |
-| `tau_env` | 环境 OU 时间常数（越小环境越慢） | [0.03, 0.12] via sigmoid |
-| `hidden_fast_scale` | hidden 快创新强度 | [0.03, 0.15] via sigmoid |
-| `residual_curriculum_progress` | 外部设定的课程学习进度 | [0, 1]，由 trainer 在训练循环中设置 |
-| `growth_rates` | LV 内禀增长率 | 可学习 |
-| `off_diagonal` / `diagonal_unconstrained` | LV 交互矩阵 | 对角线强制为负 |
-| `environment_to_species` | 环境对各物种的影响系数 | 可学习 |
+**L1 rollout**：3 步 teacher-forced rollout 强制 dynamics 多步自洽。
 
-### 子网络清单
-| 网络 | 输入 | 输出 | 用途 |
-|------|------|------|------|
-| `delay_encoder` | delay 窗口特征 | delay embedding | Takens 风格时序编码 |
-| `history_encoder` | visible 标准化序列 (GRU) | hidden state | 历史上下文压缩 |
-| `rollout_memory` | 每步 visible → GRUCell | 更新后 memory | rollout 中递进记忆 |
-| `context_refiner` | delay emb + GRU state + slope | refined context | 上下文融合 |
-| `hidden_head` | context | hidden 初始值 | softplus 确保正 |
-| `environment_head` | context | env 初始值 | tanh |
-| `residual_network` | log_state + interaction + env + memory + context | 全物种 delta | 神经残差 |
-| `environment_target_network` | log_state + env + memory + context | env target | OU 过程的目标值 |
-| `hidden_fast_network` | visible + env + memory | hidden-only delta | 快时间尺度隐藏创新 |
+**残差分解**：`h · G(x)` 结构确保 h=0 时贡献为 0，硬约束消除架空。
 
 ---
 
-## 三、数据生成
+## 三、主要文件
 
-**合成数据**（`data/partial_lv_mvp.py`）：
-- 5 个 visible species + 1 个 hidden species + 1 个 environment driver
-- 离散 Lotka-Volterra (Ricker-style) 动力学，820 步（含 160 步 warmup）
-- environment：准周期驱动（多频正弦叠加 + AR(1) 平滑，AR 系数 0.88）
-- pulse：随机稀疏脉冲（概率 0.018，衰减 0.82）
-- 交互矩阵含捕食链 (0→1→2→3→4→0) + 稀疏竞争 + hidden↔visible 耦合
-- 数据筛选：拒绝 too_flat / too_periodic，保留 moderate_complexity
-
-**数据划分**：train 60% / val 20% / test 20%（默认 492/164/164 步）
-
----
-
-## 四、损失函数体系（共 17 项）
-
-### Visible 损失
-| 损失 | 配置键 | 说明 |
-|------|--------|------|
-| `visible_one_step` | `lambda_visible_one_step` | 首步 MSE |
-| `visible_rollout` | `lambda_visible_rollout` | 全窗口 rollout MSE |
-| `peak_visible` | `lambda_peak_visible` | 高分位加权 MSE |
-| `slope` | `lambda_slope` | 差分趋势 L1 + 方向一致性 |
-| `amplitude` | `lambda_amplitude` | 振幅/标准差坍缩惩罚 |
-| `multiscale` | `lambda_multiscale` | 多尺度差分 L1（scale=2,4）|
-| `local_variance` | `lambda_local_variance` | 局部窗口方差保持 |
-
-### Hidden 损失
-| 损失 | 配置键 | 说明 |
-|------|--------|------|
-| `hidden_initial` | `lambda_hidden_initial` | 初始 hidden 与真值 MSE |
-| `hidden_rollout` | `lambda_hidden_rollout` | rollout hidden 与真值 MSE |
-| `hidden_smooth` | `lambda_hidden_smooth` | 二阶差分平滑 |
-| `interaction_hidden` | `lambda_interaction_hidden` | hidden 边交互矩阵 MSE |
-| `interaction_sparse` | `lambda_interaction_sparse` | 非对角稀疏 |
-
-### 环境/解耦损失
-| 损失 | 配置键 | 说明 |
-|------|--------|------|
-| `env_smooth` | `lambda_env_smooth` | 环境一阶差分平滑 |
-| `env_stability` | `lambda_env_stability` | 环境值域稳定 |
-| `disentangle` | `lambda_disentangle` | hidden-env 相关性惩罚 |
-| `orthogonality` | `lambda_orthogonality` | diff 序列正交 |
-| `variance_floor` | `lambda_variance_floor` | hidden/env 方差下界 |
-| `timescale_prior` | `lambda_timescale_prior` | env 应比 hidden 更慢的先验 |
-
-### LV/Residual 平衡损失
-| 损失 | 配置键 | 说明 |
-|------|--------|------|
-| `lv_guidance` | `lambda_lv_guidance` | deterministic vs lv-only 接近度 |
-| `residual_magnitude` | `lambda_residual_magnitude` | residual/LV 比值 + 能量惩罚 |
-| `residual_energy` | `lambda_residual_energy` | LV 能量占比 ≥ 0.55 目标 |
-
-### Full-context 训练
-每个 epoch 额外做一次 full-context train step，使用 train 段前 72% 作为历史、后 28% 作为 rollout 目标。
+| 文件 | 角色 |
+|---|---|
+| `models/cvhi_residual.py` | CVHI_Residual 主类，包含 forward/loss/rollout/lowpass 等 |
+| `models/cvhi_ncd.py` | `SpeciesGNN_MLP`（MLP backbone） + `SpeciesGNN_SoftForms`（soft-preset 对照版） + `MultiLayerSpeciesGNN`（包装） + `PerSpeciesTemporalAttn` + `MultiChannelPosteriorEncoder` |
+| `models/cvhi.py` | 原版 CVHI（已弃用，保留作为 anchor-based 对照） |
+| `scripts/cvhi_residual_backbone_compare.py` | 最终对比脚本：SoftForms vs MLP（LV + Holling） |
+| `scripts/cvhi_residual_mlp_portal.py` | MLP backbone 在 Portal OT 上的多 seed |
+| `scripts/cvhi_residual_L1L3_diagnostics.py` | 多 seed 诊断（Exp A-D） |
 
 ---
 
-## 五、评估体系
+## 四、当前结果
 
-### 以 hidden recovery 为中心的评估
-1. **hidden recovery**：`recover_hidden_on_split()` — 逐步滑窗用 `hidden_initial` 恢复 hidden，计算 RMSE / Pearson
-2. **hidden/env disentanglement**：correlation / roughness / autocorrelation
-3. **interaction recovery**：hidden 边的符号准确率
+| 数据 | Pearson（mean ± std） | max | 对照 Linear 监督 baseline |
+|---|---|---|---|
+| LV (5+1) | 0.82 ± 0.05 | 0.87 | 0.98 |
+| Holling (5+1) | 0.68 ± 0.20 | 0.86 | **0.62**（无监督超越监督）|
+| Portal OT (11+1) | 0.17 ± 0.09 | 0.31 | 0.35 |
 
-### 辅助评估
-4. **sliding-window visible rollout**：标准窗口 rollout RMSE / Pearson
-5. **full-context visible forecast**：从训练段末尾预测验证/测试段
-6. **amplitude collapse score**：预测振幅 vs 真值振幅比
-7. **LV/residual 能量分析**：能量占比、visible-specific 比值
+**d_ratio**（hidden_true 代入 learned dynamics 的 recon 比）：LV 5.65, Portal **1.03**（接近 1 说明 dynamics 结构上正确）
 
-### 验证集综合分数（early stopping 用，hidden recovery-centric）
-```python
-val_score = 0.40 * hidden_recovery_rmse
-           + 0.20 * |hidden_env_correlation|
-           + 0.15 * sliding_visible_rmse
-           + 0.05 * peak_visible_error
-           + 0.10 * amplitude_collapse_score
-           + 0.10 * residual_dominates_fraction
-```
+**ρ(val_recon, Pearson) on Portal**：−0.66（方向正确，可做无监督选模）
 
 ---
 
-## 六、当前最佳 run 与瓶颈
+## 五、关键约束（红线）
 
-### 当前接受的 best run
-`runs/20260411_115901_partial_lv_lv_guided_stochastic_refined`
-
-来源：`codex_iteration_log.md` Iteration 4 结束后的决策：回退至此 run。
-
-| 指标 | 值 |
-|------|-----|
-| sliding visible RMSE | 0.794 |
-| full-context visible RMSE | 0.807 |
-| hidden RMSE | 0.166 |
-| hidden Pearson | 0.902 |
-| amplitude collapse | 0.058 |
-| hidden/env correlation | 0.099 |
-| LV/residual ratio mean | 1.645 |
-| residual dominates fraction | 0.871 |
-
-### 当前状态（2026-04-12 方法论转向后）
-1. **Hidden recovery 质量良好**（Pearson 0.90），但需在新 val_score 下重新验证
-2. **residual 分支仍偏强**（dominates fraction 0.87），结构化 LV 分支未充分发挥
-3. **hidden/env 解耦有效**（corr 0.099），多重约束策略起作用
-4. **不再追求 full-context visible prediction**，该方向已放弃
+1. **训练中绝对不用 hidden_true**：不作监督目标、不作 anchor、不作 pseudo-label、不作初始化
+2. **不引入外部协变量**（降雨/NDVI 等）
+3. **任务严格 n→1**，单 hidden
+4. **节点必须是物种**（GNN 语义保留）
 
 ---
 
-## 七、已尝试并否决的方向
+## 六、方法演化路径（可查阅的详细记录）
 
-以下方向均在 `codex_iteration_log.md` 中有详细记录（包含定量指标）：
+- [notes/2026-04-13_cvhi_ncd_journey.md](notes/2026-04-13_cvhi_ncd_journey.md) — 完整 10 次迭代记录
+- [notes/2026-04-13_cvhi_residual_final.md](notes/2026-04-13_cvhi_residual_final.md) — 最终方法完整文档
 
-| 方向 | 迭代 | 结果 | 原因 |
-|------|------|------|------|
-| 硬限 visible residual budget | Iteration 1 | **revert** | hidden 崩溃（RMSE 0.17→0.40, Pearson 0.90→-0.57）、amplitude 恶化 |
-| 多 cut-point full-context 训练 | Iteration 2 | **revert** | visible/hidden 均恶化 |
-| structured hidden→visible / env→visible driver | Iteration 3 | **partial keep** | sliding visible 大幅改善（0.79→0.35）但 hidden 崩溃（Pearson→-0.09） |
-| 约束 hidden-visible 路径仅用 hidden 输入 | Iteration 4 | **revert** | amplitude 崩溃 (0.71) |
-
-**关键教训**：
-- "减弱 residual" 方向正确，但硬限太粗暴
-- structured visible driver 能改善 full-context，但需防止 hidden bypass
-- 多 cut-point 训练没有帮助
-- Iteration 3 的 structured channel 是唯一显著改善 full-context visible 的尝试，值得沿此方向继续但需同时约束 hidden 一致性
+演化摘要：
+1. CVHI 原版 + anchor（违反无监督红线）
+2. CVHI-NCD + soft-preset forms（gates 无分化）
+3. CVHI_Residual 去 anchor（Portal 上 val_recon 反向）
+4. 加 L1 rollout（LV 提升，Portal 改善 val 相关）
+5. 加 L3 低频先验（证伪：hidden 不是慢变量）
+6. MLP backbone + formula hints（**最终版，各项指标全面改善**）
 
 ---
 
-## 八、常用命令
+## 七、诊断实验套件
+
+`scripts/cvhi_residual_L1L3_diagnostics.py` 包含四组关键诊断：
+
+- **Exp A**：多 seed 扫描 val_recon、m_null、m_shuf、h_var 与 Pearson 的相关性
+- **Exp B**：top-K（按 val_recon）ensemble + 跨 seed 相似度
+- **Exp C**：H-step 原型（固定 dynamics，从 4 种 h_init 内循环优化 h_free）
+- **Exp D**：hidden_true 替代诊断（测试 learned dynamics 能否接受真 h）
+
+这些诊断在定位"dynamics 伪解"作为根本问题上起了决定性作用。
+
+---
+
+## 八、已否决的方向（不要重复）
+
+| 方向 | 为什么否决 |
+|---|---|
+| Anchor from Linear Sparse+EM | anchor 来自监督投影，违反红线 |
+| CVHI-NCD 软混合 5 种预设 | gates 在 LV 和 Holling 上几乎相同，未发生形式选择 |
+| L3 低频先验 | LV 真实 hidden 本身含高频成分，低频约束会压掉真信号 |
+| Val-based top-K ensemble（SoftForms 阶段）| Portal 上 val_recon 反向选解，ensemble 更差 |
+| D-H-Q 交替优化 | Exp C 证明 h 空间已凸，问题在 dynamics 层 |
+| 外部协变量 | 用户明确禁止 |
+
+---
+
+## 九、未完成工作（paper-ready 清单）
+
+### 必做
+1. 多 seed 正式统计（20-30 seeds, 95% CI）
+2. 消融实验独立跑：MLP vs SoftForms, with/without hints, L1 vs no L1
+3. 跨 hidden 物种（Portal 上 DO, PP, PF, PE）
+
+### 可选
+4. Ensemble by val-selection（ρ 已翻正，top-3 应能提 Portal 到 0.25+）
+5. 公式 hint 库扩充（Holling III, Ivlev, Beverton-Holt）
+6. 可解释性分析（MLP 对各 hint 的扰动敏感度）
+
+---
+
+## 十、常用命令
 
 ```bash
-# 激活环境
-source .venv/bin/activate
+# 环境
+source .venv/bin/activate   # Linux/Mac
+.venv\Scripts\activate       # Windows
 
-# 用原版配置运行主线实验
-python -m scripts.run_partial_lv_mvp --config configs/partial_lv_mvp.yaml
+# 最终方法 LV+Holling 对比（SoftForms vs MLP）
+python -m scripts.cvhi_residual_backbone_compare --n_seeds 5 --epochs 300
 
-# 用 v2 机制分离配置运行
-python -m scripts.run_partial_lv_mvp --config configs/partial_lv_mvp_v2_mechanism.yaml
+# Portal 上 MLP backbone
+python -m scripts.cvhi_residual_mlp_portal --n_seeds 6 --epochs 300 --hidden OT
 
-# 编译检查（不运行）
-python -m py_compile models/partial_lv_recovery_model.py
-python -m py_compile train/partial_lv_mvp_trainer.py
-python -m py_compile scripts/run_partial_lv_mvp.py
+# 多 seed 诊断
+python -m scripts.cvhi_residual_L1L3_diagnostics --n_seeds 8 --epochs 300
 
-# 快速 smoke test（建议修改 epochs=2, noise_scan_epochs=1）
+# 代码编译检查
+python -m py_compile models/cvhi_residual.py
+python -m py_compile models/cvhi_ncd.py
 ```
 
 ---
 
-## 九、修改原则
+## 十一、修改原则
 
-1. **先理解再改**：读完本文件 + `notes/` + `codex_iteration_log.md` 后再动手
-2. **不要重复失败实验**：查看第七节已否决方向及 `codex_iteration_log.md` 全文
-3. **小步验证**：每次只改一个机制，立即 smoke test
-4. **以 hidden recovery 为中心**：不要为了 visible forecast 而牺牲 hidden 质量
-5. **保持向后兼容**：新配置键用 `.get(key, default)` 读取，旧 YAML 不需要更新
-6. **记录一切**：每次实验需在 `codex_iteration_log.md` 追加完整条目（假设→变更→指标→keep/revert）
-
----
-
-## 十、项目文件索引
-
-| 文件/目录 | 用途 |
-|-----------|------|
-| `CLAUDE.md` | 本文件，项目入口 |
-| `configs/partial_lv_mvp.yaml` | 原版配置（生产用） |
-| `configs/partial_lv_mvp_v2_mechanism.yaml` | v2 机制分离配置（实验用） |
-| `models/partial_lv_recovery_model.py` | 核心模型（4-way rollout + OU 环境） |
-| `models/encoders.py` | MLP 等基础网络构件 |
-| `train/partial_lv_mvp_trainer.py` | 全上下文训练器（17 项损失） |
-| `train/utils.py` | 工具函数（seed / data loader / save_json） |
-| `scripts/run_partial_lv_mvp.py` | 主实验入口脚本 |
-| `data/partial_lv_mvp.py` | 合成生态系统数据生成器 |
-| `data/dataset.py` | TimeSeriesBundle + 窗口采样 |
-| `data/transforms.py` | Log-ZScore 标准化 |
-| `notes/` | 项目文档（overview / codebase_map / experiment / design / next_steps） |
-| `codex_iteration_log.md` | Codex 4 轮迭代的完整实验日志（**最重要的决策文档**） |
-| `docs/research_description.md` | 研究描述文书 |
-| `runs/` | 保留的关键实验结果（3 个里程碑 run） |
+1. 先读 [notes/2026-04-13_cvhi_residual_final.md](notes/2026-04-13_cvhi_residual_final.md) 理解现有架构
+2. 结构性改动前先用诊断实验（Exp A-D）定位瓶颈，避免盲目调参
+3. 每次改动单一组件，立即多 seed 验证
+4. 红线绝不触碰：训练流程中不出现 hidden_true
+5. d_ratio 和 ρ(val_recon, Pearson) 是两个核心无监督指标，改动后都要检查
