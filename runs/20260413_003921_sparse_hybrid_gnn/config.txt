@@ -1,0 +1,10 @@
+baseline: d_hidden=16, layers=2, top_k=3
+hidden_decoder: d_model=48, blocks=2, heads=8
+takens_lags: [1, 2, 4, 8]
+sparse_lambda=0.5, smooth_lambda=0.02, var_lambda=0.2
+epochs=150, lr=0.0008, train_ratio=0.75, seed=42
+num_params=109521
+
+Final Pearson: 0.8464
+Final RMSE: 0.1555
+Best epoch: 145

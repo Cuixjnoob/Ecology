@@ -1,20 +1,19 @@
 """部分观测 LV-MVP 训练器。
 
 职责：
-  - 全上下文（full-context）训练：在整条时间序列上做滚动预测
-  - 17 项损失函数的加权求和（见 compute_training_loss）
+  - 隐藏物种推断为核心目标（hidden recovery-centric）
+  - 滑动窗口训练：在已知时间序列内做滚动重构（非未来预测）
+  - 全上下文（full-context）训练：在 train 段内做长距离重构
+  - 损失函数的加权求和（见 _loss_bundle）
   - 噪声退火（annealing）：随 epoch 线性衰减噪声强度
   - 课程学习：residual_curriculum_progress 从 0 线性增长到 1
-  - 评估：train/val/test 三段分别滚动、计算 Pearson/RMSE
+  - 评估：以 hidden recovery quality 为核心，visible 重构为辅
 
 损失项概览（由 config['loss'] 控制权重）：
-  vis_mse / vis_log_mse / vis_peak  — 可见物种预测精度
-  hid_mse / hid_corr               — 隐藏物种推断
-  env_smooth / env_mean             — 环境平滑性与均值正则
+  vis_mse / vis_log_mse / vis_peak  — 可见物种重构精度（训练信号）
+  hid_mse / hid_corr               — 隐藏物种推断（核心目标）
   interaction_matrix                — 与真实交互矩阵的匹配
   noise_penalty / lv_residual_balance / lv_drift_scale — 机制正则
-  diag_hidden_env_corr / diag_hidden_autocorr / diag_hidden_smoothness
-  diag_env_autocorr / diag_env_variation — 隐藏/环境序列诊断
 """
 from __future__ import annotations
 
@@ -50,15 +49,6 @@ def _mean_pearson(prediction: torch.Tensor, target: torch.Tensor) -> float:
 
 def _rmse(prediction: torch.Tensor, target: torch.Tensor) -> float:
     return float(torch.sqrt((prediction - target).square().mean()).item())
-
-
-def _corr_tensor(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    a_centered = a - a.mean(dim=1, keepdim=True)
-    b_centered = b - b.mean(dim=1, keepdim=True)
-    numerator = (a_centered * b_centered).mean(dim=1)
-    a_scale = torch.sqrt(a_centered.square().mean(dim=1) + 1e-6)
-    b_scale = torch.sqrt(b_centered.square().mean(dim=1) + 1e-6)
-    return numerator / (a_scale * b_scale)
 
 
 class PartialLVMVPTrainer:
@@ -186,50 +176,6 @@ class PartialLVMVPTrainer:
         collapse = torch.relu(1.0 - ratio)
         return float(collapse.mean().item())
 
-    def _sequence_diagnostics(
-        self,
-        hidden_series: torch.Tensor,
-        environment_series: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
-        if hidden_series.dim() == 2:
-            hidden_series = hidden_series.unsqueeze(0)
-        if environment_series.dim() == 2:
-            environment_series = environment_series.unsqueeze(0)
-
-        hidden_log = self._log_values(hidden_series)
-        environment = environment_series
-
-        hidden_correlation = _corr_tensor(hidden_log, environment).mean()
-
-        if hidden_log.shape[1] > 1:
-            hidden_lag = _corr_tensor(hidden_log[:, 1:, :], hidden_log[:, :-1, :]).mean()
-            environment_lag = _corr_tensor(environment[:, 1:, :], environment[:, :-1, :]).mean()
-            hidden_diff = hidden_log[:, 1:, :] - hidden_log[:, :-1, :]
-            environment_diff = environment[:, 1:, :] - environment[:, :-1, :]
-            hidden_roughness = hidden_diff.abs().mean()
-            environment_roughness = environment_diff.abs().mean()
-            diff_correlation = _corr_tensor(hidden_diff, environment_diff).mean()
-        else:
-            zero = hidden_log.new_tensor(0.0)
-            hidden_lag = zero
-            environment_lag = zero
-            hidden_roughness = zero
-            environment_roughness = zero
-            diff_correlation = zero
-
-        hidden_std = torch.sqrt(hidden_log.var(dim=1, unbiased=False) + 1e-6).mean()
-        environment_std = torch.sqrt(environment.var(dim=1, unbiased=False) + 1e-6).mean()
-        return {
-            "hidden_environment_correlation": hidden_correlation,
-            "hidden_autocorrelation": hidden_lag,
-            "environment_autocorrelation": environment_lag,
-            "hidden_roughness": hidden_roughness,
-            "environment_roughness": environment_roughness,
-            "hidden_std": hidden_std,
-            "environment_std": environment_std,
-            "diff_correlation": diff_correlation,
-        }
-
     def _visible_loss_terms(self, prediction: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
         pred_log = self._log_values(prediction)
         target_log = self._log_values(target)
@@ -343,66 +289,6 @@ class PartialLVMVPTrainer:
             "interaction_sparse": interaction_sparse,
         }
 
-    def _environment_terms(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        diagnostics = self._sequence_diagnostics(
-            hidden_series=outputs["hidden_predictions"],
-            environment_series=outputs["environment_predictions"],
-        )
-        initial_diagnostics = self._sequence_diagnostics(
-            hidden_series=outputs["hidden_initial"],
-            environment_series=outputs["environment_initial"],
-        )
-        environment = outputs["environment_predictions"]
-        if environment.shape[1] > 1:
-            env_smooth = (environment[:, 1:, :] - environment[:, :-1, :]).square().mean()
-            env_curvature = (
-                environment[:, 2:, :]
-                - 2 * environment[:, 1:-1, :]
-                + environment[:, :-2, :]
-            ).square().mean() if environment.shape[1] > 2 else environment.new_tensor(0.0)
-        else:
-            env_smooth = environment.new_tensor(0.0)
-            env_curvature = environment.new_tensor(0.0)
-        env_stability = torch.relu(environment.abs() - 1.8).square().mean()
-
-        orthogonality = diagnostics["diff_correlation"].square()
-        hidden_floor = float(self.loss_cfg.get("hidden_variance_floor", 0.09))
-        environment_floor = float(self.loss_cfg.get("environment_variance_floor", 0.08))
-        variance_floor = (
-            torch.relu(hidden_floor - diagnostics["hidden_std"]).square()
-            + torch.relu(environment_floor - diagnostics["environment_std"]).square()
-            + 0.5 * torch.relu(hidden_floor - initial_diagnostics["hidden_std"]).square()
-            + 0.5 * torch.relu(environment_floor - initial_diagnostics["environment_std"]).square()
-        )
-        smoother_ratio = float(self.loss_cfg.get("environment_smoother_ratio", 0.70))
-        timescale_prior = torch.relu(
-            diagnostics["environment_roughness"] - smoother_ratio * diagnostics["hidden_roughness"]
-        ).square()
-        autocorr_margin = float(self.loss_cfg.get("environment_autocorr_margin", 0.05))
-        timescale_prior = timescale_prior + torch.relu(
-            diagnostics["hidden_autocorrelation"] - diagnostics["environment_autocorrelation"] + autocorr_margin
-        ).square()
-        timescale_prior = timescale_prior + 0.5 * torch.relu(
-            initial_diagnostics["hidden_autocorrelation"]
-            - initial_diagnostics["environment_autocorrelation"]
-            + autocorr_margin
-        ).square()
-        timescale_prior = timescale_prior + 0.5 * env_curvature
-
-        disentangle = (
-            diagnostics["hidden_environment_correlation"].square()
-            + 0.85 * initial_diagnostics["hidden_environment_correlation"].square()
-            + 0.7 * orthogonality
-        )
-        return {
-            "env_smooth": env_smooth,
-            "env_stability": env_stability,
-            "disentangle": disentangle,
-            "orthogonality": orthogonality,
-            "variance_floor": variance_floor,
-            "timescale_prior": timescale_prior,
-        }
-
     def _lv_terms(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         lv_contrib = outputs.get("structured_contribution_history", outputs["lv_contribution_history"])
         residual_contrib = outputs["residual_contribution_history"]
@@ -479,7 +365,6 @@ class PartialLVMVPTrainer:
             future_hidden=future_hidden,
         )
         interaction_terms = self._interaction_terms(outputs["interaction_matrix"])
-        environment_terms = self._environment_terms(outputs)
         lv_terms = self._lv_terms(outputs)
         particle_terms = self._particle_terms(outputs)
 
@@ -490,12 +375,6 @@ class PartialLVMVPTrainer:
             + float(self.loss_cfg["lambda_interaction_hidden"]) * interaction_terms["interaction_hidden"]
             + float(self.loss_cfg["lambda_interaction_sparse"]) * interaction_terms["interaction_sparse"]
             + float(self.loss_cfg["lambda_hidden_smooth"]) * hidden_terms["hidden_smooth"]
-            + float(self.loss_cfg["lambda_env_smooth"]) * environment_terms["env_smooth"]
-            + float(self.loss_cfg["lambda_env_stability"]) * environment_terms["env_stability"]
-            + float(self.loss_cfg["lambda_disentangle"]) * environment_terms["disentangle"]
-            + float(self.loss_cfg.get("lambda_orthogonality", 0.0)) * environment_terms["orthogonality"]
-            + float(self.loss_cfg.get("lambda_variance_floor", 0.0)) * environment_terms["variance_floor"]
-            + float(self.loss_cfg.get("lambda_timescale_prior", 0.0)) * environment_terms["timescale_prior"]
             + float(self.loss_cfg["lambda_lv_guidance"]) * lv_terms["lv_guidance"]
             + float(self.loss_cfg["lambda_residual_magnitude"]) * lv_terms["residual_magnitude"]
             + float(self.loss_cfg.get("lambda_residual_energy", 0.0)) * lv_terms["residual_energy"]
@@ -507,7 +386,6 @@ class PartialLVMVPTrainer:
             **visible_terms,
             **hidden_terms,
             **interaction_terms,
-            **environment_terms,
             **lv_terms,
             **particle_terms,
         }
@@ -554,17 +432,12 @@ class PartialLVMVPTrainer:
             current_hidden=self.hidden_series_raw[history_visible.shape[0] - 1 : history_visible.shape[0]].to(self.device),
             future_hidden=future_hidden.unsqueeze(0).to(self.device),
         )
-        environment_terms = self._environment_terms(outputs)
         lv_terms = self._lv_terms(outputs)
 
         full_context_loss = (
             float(self.loss_cfg["lambda_full_context_visible"]) * self._compose_visible_loss(visible_terms)
             + float(self.loss_cfg["lambda_full_context_hidden"]) * hidden_terms["hidden_rollout"]
             + float(self.loss_cfg["lambda_hidden_smooth"]) * 0.5 * hidden_terms["hidden_smooth"]
-            + float(self.loss_cfg["lambda_env_smooth"]) * 0.5 * environment_terms["env_smooth"]
-            + float(self.loss_cfg["lambda_disentangle"]) * 0.5 * environment_terms["disentangle"]
-            + float(self.loss_cfg.get("lambda_orthogonality", 0.0)) * 0.5 * environment_terms["orthogonality"]
-            + float(self.loss_cfg.get("lambda_timescale_prior", 0.0)) * 0.5 * environment_terms["timescale_prior"]
             + float(self.loss_cfg["lambda_lv_guidance"]) * 0.5 * lv_terms["lv_guidance"]
             + float(self.loss_cfg.get("lambda_residual_energy", 0.0)) * 0.5 * lv_terms["residual_energy"]
         )
@@ -589,12 +462,6 @@ class PartialLVMVPTrainer:
             "interaction_hidden": 0.0,
             "interaction_sparse": 0.0,
             "hidden_smooth": 0.0,
-            "env_smooth": 0.0,
-            "env_stability": 0.0,
-            "disentangle": 0.0,
-            "orthogonality": 0.0,
-            "variance_floor": 0.0,
-            "timescale_prior": 0.0,
             "lv_guidance": 0.0,
             "residual_magnitude": 0.0,
             "residual_energy": 0.0,
@@ -660,7 +527,6 @@ class PartialLVMVPTrainer:
         visible_true = []
         hidden_pred = []
         hidden_true = []
-        env_pred = []
         ratio_mean = []
         ratio_std = []
         dominate = []
@@ -680,7 +546,6 @@ class PartialLVMVPTrainer:
             visible_true.append(batch["future_raw"].cpu())
             hidden_pred.append(outputs["hidden_predictions"].cpu())
             hidden_true.append(batch["future_hidden"].cpu())
-            env_pred.append(outputs["environment_predictions"].cpu())
             ratio_metrics = self._collect_ratio_metrics(outputs)
             ratio_mean.append(ratio_metrics["lv_residual_ratio_mean"])
             ratio_std.append(ratio_metrics["lv_residual_ratio_std"])
@@ -694,8 +559,6 @@ class PartialLVMVPTrainer:
         visible_true_tensor = torch.cat(visible_true, dim=0)
         hidden_pred_tensor = torch.cat(hidden_pred, dim=0)
         hidden_true_tensor = torch.cat(hidden_true, dim=0)
-        env_pred_tensor = torch.cat(env_pred, dim=0)
-        disent_metrics = self._sequence_diagnostics(hidden_pred_tensor, env_pred_tensor)
 
         return {
             "visible_rollout_rmse": _rmse(visible_pred_tensor, visible_true_tensor),
@@ -704,11 +567,6 @@ class PartialLVMVPTrainer:
             "hidden_rollout_pearson": _mean_pearson(hidden_pred_tensor, hidden_true_tensor),
             "peak_visible_error": self._peak_visible_error(visible_pred_tensor, visible_true_tensor),
             "amplitude_collapse_score": self._amplitude_collapse_score(visible_pred_tensor, visible_true_tensor),
-            "hidden_environment_correlation": float(disent_metrics["hidden_environment_correlation"].item()),
-            "hidden_autocorrelation": float(disent_metrics["hidden_autocorrelation"].item()),
-            "environment_autocorrelation": float(disent_metrics["environment_autocorrelation"].item()),
-            "hidden_roughness": float(disent_metrics["hidden_roughness"].item()),
-            "environment_roughness": float(disent_metrics["environment_roughness"].item()),
             "lv_residual_ratio_mean": float(sum(ratio_mean) / max(len(ratio_mean), 1)),
             "lv_residual_ratio_std": float(sum(ratio_std) / max(len(ratio_std), 1)),
             "residual_dominates_fraction": float(sum(dominate) / max(len(dominate), 1)),
@@ -734,8 +592,6 @@ class PartialLVMVPTrainer:
         )
         visible_pred = outputs["visible_predictions"][0].cpu()
         hidden_pred = outputs["hidden_predictions"][0].cpu()
-        environment_pred = outputs["environment_predictions"][0].cpu()
-        disent_metrics = self._sequence_diagnostics(hidden_pred, environment_pred)
 
         return {
             "metrics": {
@@ -745,14 +601,12 @@ class PartialLVMVPTrainer:
                 "amplitude_collapse_score": self._amplitude_collapse_score(visible_pred.unsqueeze(0), future_visible.unsqueeze(0)),
                 "hidden_rmse": _rmse(hidden_pred, future_hidden),
                 "hidden_pearson": _mean_pearson(hidden_pred, future_hidden),
-                "hidden_environment_correlation": float(disent_metrics["hidden_environment_correlation"].item()),
                 **self._collect_ratio_metrics(outputs),
             },
             "visible_pred": visible_pred,
             "visible_true": future_visible.clone(),
             "hidden_pred": hidden_pred,
             "hidden_true": future_hidden.clone(),
-            "environment_pred": environment_pred,
             "interaction_pred": outputs["interaction_matrix"].detach().cpu(),
         }
 
@@ -769,29 +623,24 @@ class PartialLVMVPTrainer:
             self.model.residual_curriculum_progress = min(1.0, float(epoch) / max(self.total_epochs * 0.6, 1))
             train_losses = self._iterate_loader(train_loader, training=True)
             train_full_context_loss = self._full_context_train_step()
-            val_losses = self._iterate_loader(val_loader, training=False)
-            val_metrics = self._validation_metrics(val_loader, num_particles=self.eval_particles)
-            val_full_context = self.evaluate_full_context("val", num_particles=self.eval_particles)
+            # train 段内重构质量（不涉及未来预测，所有数据已知）
+            train_recon = self._iterate_loader(train_loader, training=False)
             val_hidden_recovery = self.recover_hidden_on_split("val")
 
+            # Hidden recovery-centric val_score
+            # visible 重构质量来自 train 段内（已知数据），作为动力学一致性的间接信号
             val_score = (
-                0.30 * val_metrics["visible_rollout_rmse"]
-                + 0.22 * val_full_context["metrics"]["visible_rmse"]
-                + 0.15 * val_metrics["peak_visible_error"]
-                + 0.12 * val_metrics["amplitude_collapse_score"]
-                + 0.08 * val_hidden_recovery["metrics"]["hidden_recovery_rmse"]
-                + 0.08 * abs(val_hidden_recovery["metrics"]["hidden_environment_correlation"])
-                + 0.05 * val_metrics["residual_dominates_fraction"]
+                0.45 * val_hidden_recovery["metrics"]["hidden_recovery_rmse"]
+                + 0.25 * (1.0 - max(0.0, min(1.0, val_hidden_recovery["metrics"]["hidden_recovery_pearson"])))
+                + 0.20 * train_recon["visible_rollout"]
+                + 0.10 * train_recon["amplitude"]
             )
             epoch_record = {
                 "epoch": float(epoch),
                 "train_total": train_losses["total"] + train_full_context_loss,
-                "val_total": val_losses["total"] + float(self.loss_cfg["lambda_full_context_visible"]) * val_full_context["metrics"]["visible_rmse"],
-                "val_visible_rollout_rmse": val_metrics["visible_rollout_rmse"],
-                "val_full_context_visible_rmse": val_full_context["metrics"]["visible_rmse"],
+                "train_visible_recon": train_recon["visible_rollout"],
                 "val_hidden_recovery_rmse": val_hidden_recovery["metrics"]["hidden_recovery_rmse"],
-                "val_hidden_environment_correlation": val_hidden_recovery["metrics"]["hidden_environment_correlation"],
-                "val_amplitude_collapse_score": val_metrics["amplitude_collapse_score"],
+                "val_hidden_recovery_pearson": val_hidden_recovery["metrics"]["hidden_recovery_pearson"],
                 "val_score": val_score,
             }
             history.append(epoch_record)
@@ -830,9 +679,7 @@ class PartialLVMVPTrainer:
         )
         visible_pred = outputs["visible_predictions"][0].cpu()
         hidden_pred = outputs["hidden_predictions"][0].cpu()
-        environment_pred = outputs["environment_predictions"][0].cpu()
         interaction_pred = outputs["interaction_matrix"].detach().cpu()
-        disent_metrics = self._sequence_diagnostics(hidden_pred, environment_pred)
 
         hidden_edge_pred = torch.cat([interaction_pred[:5, 5], interaction_pred[5, :5]], dim=0)
         hidden_edge_true = torch.cat(
@@ -852,7 +699,6 @@ class PartialLVMVPTrainer:
             "amplitude_collapse_score": self._amplitude_collapse_score(visible_pred.unsqueeze(0), future_visible_true.unsqueeze(0)),
             "hidden_recovery_rmse": _rmse(hidden_pred, future_hidden_true),
             "hidden_recovery_pearson": _mean_pearson(hidden_pred, future_hidden_true),
-            "hidden_environment_correlation": float(disent_metrics["hidden_environment_correlation"].item()),
             "interaction_hidden_sign_accuracy": sign_accuracy,
             **self._collect_ratio_metrics(outputs),
         }
@@ -860,7 +706,6 @@ class PartialLVMVPTrainer:
             "metrics": metrics,
             "visible_pred": visible_pred,
             "hidden_pred": hidden_pred,
-            "environment_pred": environment_pred,
             "interaction_pred": interaction_pred,
         }
 
@@ -875,7 +720,6 @@ class PartialLVMVPTrainer:
         self.model.eval()
         predictions = []
         targets = []
-        env_predictions = []
         indices = []
 
         for time_index in range(history_length - 1, int(visible_series_raw.shape[0])):
@@ -888,28 +732,19 @@ class PartialLVMVPTrainer:
             )
             predictions.append(outputs["hidden_initial"][0].cpu())
             targets.append(hidden_series_true[time_index].cpu())
-            env_predictions.append(outputs["environment_initial"][0].cpu())
             indices.append(global_offset + time_index)
 
         prediction_tensor = torch.stack(predictions, dim=0)
         target_tensor = torch.stack(targets, dim=0)
-        env_prediction_tensor = torch.stack(env_predictions, dim=0)
-        disent_metrics = self._sequence_diagnostics(prediction_tensor, env_prediction_tensor)
 
         metrics = {
             "hidden_recovery_rmse": _rmse(prediction_tensor, target_tensor),
             "hidden_recovery_pearson": _mean_pearson(prediction_tensor, target_tensor),
-            "hidden_environment_correlation": float(disent_metrics["hidden_environment_correlation"].item()),
-            "hidden_autocorrelation": float(disent_metrics["hidden_autocorrelation"].item()),
-            "environment_autocorrelation": float(disent_metrics["environment_autocorrelation"].item()),
-            "hidden_roughness": float(disent_metrics["hidden_roughness"].item()),
-            "environment_roughness": float(disent_metrics["environment_roughness"].item()),
         }
         return {
             "metrics": metrics,
             "hidden_pred": prediction_tensor,
             "hidden_true": target_tensor,
-            "environment_pred": env_prediction_tensor,
             "indices": torch.tensor(indices, dtype=torch.long),
         }
 

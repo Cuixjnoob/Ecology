@@ -1,0 +1,114 @@
+[
+  {
+    "name": "Portal_rodent.csv",
+    "path": "Rodents/Portal_rodent.csv",
+    "sha": "92d207bb1097e7792e077e92d1d03afc7fcd09cb",
+    "size": 7318259,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/92d207bb1097e7792e077e92d1d03afc7fcd09cb",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/Portal_rodent.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/92d207bb1097e7792e077e92d1d03afc7fcd09cb",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent.csv"
+    }
+  },
+  {
+    "name": "Portal_rodent_datanotes.csv",
+    "path": "Rodents/Portal_rodent_datanotes.csv",
+    "sha": "47868b824fbeebd54b90f6718d3224b972e11b0a",
+    "size": 784,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_datanotes.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_datanotes.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/47868b824fbeebd54b90f6718d3224b972e11b0a",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/Portal_rodent_datanotes.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_datanotes.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/47868b824fbeebd54b90f6718d3224b972e11b0a",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_datanotes.csv"
+    }
+  },
+  {
+    "name": "Portal_rodent_species.csv",
+    "path": "Rodents/Portal_rodent_species.csv",
+    "sha": "bcecdbeab3fb364a7712d17486fa12b5ceda835f",
+    "size": 4247,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_species.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_species.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/bcecdbeab3fb364a7712d17486fa12b5ceda835f",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/Portal_rodent_species.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_species.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/bcecdbeab3fb364a7712d17486fa12b5ceda835f",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_species.csv"
+    }
+  },
+  {
+    "name": "Portal_rodent_trapping.csv",
+    "path": "Rodents/Portal_rodent_trapping.csv",
+    "sha": "b7790dbff809d12436587107b78aff12f6770402",
+    "size": 306910,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_trapping.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_trapping.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/b7790dbff809d12436587107b78aff12f6770402",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/Portal_rodent_trapping.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_rodent_trapping.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/b7790dbff809d12436587107b78aff12f6770402",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_rodent_trapping.csv"
+    }
+  },
+  {
+    "name": "Portal_suspect_stakes.csv",
+    "path": "Rodents/Portal_suspect_stakes.csv",
+    "sha": "e2ee17bf1e122aa355487ce398c32fa7fa5be076",
+    "size": 1098,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_suspect_stakes.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_suspect_stakes.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/e2ee17bf1e122aa355487ce398c32fa7fa5be076",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/Portal_suspect_stakes.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/Portal_suspect_stakes.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/e2ee17bf1e122aa355487ce398c32fa7fa5be076",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/Portal_suspect_stakes.csv"
+    }
+  },
+  {
+    "name": "README.md",
+    "path": "Rodents/README.md",
+    "sha": "1d8ad18094ef38e136759bf6fdb1c94d4e5feea3",
+    "size": 3797,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/README.md?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/README.md",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/1d8ad18094ef38e136759bf6fdb1c94d4e5feea3",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/README.md",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/README.md?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/1d8ad18094ef38e136759bf6fdb1c94d4e5feea3",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/README.md"
+    }
+  },
+  {
+    "name": "moon_dates.csv",
+    "path": "Rodents/moon_dates.csv",
+    "sha": "625a35c505db1b9dc8c2683106e86b763f8c6f5a",
+    "size": 17422,
+    "url": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/moon_dates.csv?ref=main",
+    "html_url": "https://github.com/weecology/PortalData/blob/main/Rodents/moon_dates.csv",
+    "git_url": "https://api.github.com/repos/weecology/PortalData/git/blobs/625a35c505db1b9dc8c2683106e86b763f8c6f5a",
+    "download_url": "https://raw.githubusercontent.com/weecology/PortalData/main/Rodents/moon_dates.csv",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/weecology/PortalData/contents/Rodents/moon_dates.csv?ref=main",
+      "git": "https://api.github.com/repos/weecology/PortalData/git/blobs/625a35c505db1b9dc8c2683106e86b763f8c6f5a",
+      "html": "https://github.com/weecology/PortalData/blob/main/Rodents/moon_dates.csv"
+    }
+  }
+]

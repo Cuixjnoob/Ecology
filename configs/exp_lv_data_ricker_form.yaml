@@ -1,0 +1,78 @@
+# 方法1: LV 数据 + LV 先验 + Ricker (exp) 形式
+# 目的：验证 exp 形式能否稳定训练，参数恢复是否改善
+
+experiment:
+  seed: 42
+  name: exp_lv_data_ricker_form
+  runs_dir: runs
+
+simulation:
+  generator: lv
+  visible_species: 5
+  hidden_species: 1
+  total_steps: 820
+  warmup_steps: 160
+  process_noise: 0.006
+  max_attempts: 640
+  max_state_value: 5.5
+
+data:
+  history_length: 24
+  delay_length: 6
+  delay_stride: 2
+  train_horizon: 18
+  full_context_train_ratio: 0.72
+  figure_rollout_horizon: 18
+  train_ratio: 0.60
+  val_ratio: 0.20
+  batch_size: 48
+  num_workers: 0
+
+model:
+  delay_embedding_dim: 12
+  context_dim: 40
+  hidden_dim: 64
+  encoder_layers: 2
+  residual_layers: 3
+  use_environment_latent: false
+  use_lv_guidance: true
+  lv_form: ricker   # ← 关键：启用 exp 形式
+  base_visible_noise: 0.015
+  base_hidden_noise: 0.012
+
+train:
+  device: cpu
+  epochs: 40
+  early_stopping_patience: 10
+  learning_rate: 0.0018
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  noise_scan_epochs: 6
+  noise_scan_patience: 3
+
+noise:
+  particle_rollout_K: 4
+  particle_aggregation: mean
+  train_particles: 1
+  eval_particles: 2
+  tested_rollout_noise: [0.01, 0.02, 0.05]
+  tested_input_noise: [0.005, 0.01]
+  tested_latent_perturb: [0.01, 0.02]
+
+loss:
+  lambda_visible_one_step: 0.8
+  lambda_visible_rollout: 1.0
+  lambda_peak_visible: 0.9
+  lambda_slope: 0.55
+  lambda_amplitude: 0.60
+  lambda_full_context_visible: 0.9
+  lambda_full_context_hidden: 0.35
+  lambda_hidden_initial: 0.55
+  lambda_hidden_rollout: 1.15
+  lambda_interaction_hidden: 0.16
+  lambda_interaction_sparse: 0.00015
+  lambda_hidden_smooth: 0.008
+  lambda_lv_guidance: 0.08
+  lambda_residual_magnitude: 0.12
+  lambda_particle_consistency: 0.0
+  peak_quantile: 0.75

@@ -4,6 +4,7 @@ experiment:
   runs_dir: runs
 
 simulation:
+  generator: lv   # lv | nonlinear
   visible_species: 5
   hidden_species: 1
   total_steps: 820

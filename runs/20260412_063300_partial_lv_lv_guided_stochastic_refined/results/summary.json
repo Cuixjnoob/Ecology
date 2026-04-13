@@ -1,0 +1,243 @@
+{
+  "run_name": "20260412_063300_partial_lv_lv_guided_stochastic_refined",
+  "run_dir": "runs\\20260412_063300_partial_lv_lv_guided_stochastic_refined",
+  "readme_path": "runs\\20260412_063300_partial_lv_lv_guided_stochastic_refined\\README.md",
+  "split_info": {
+    "total_steps": 820,
+    "train_steps": 492,
+    "val_steps": 164,
+    "test_steps": 164,
+    "train_range": [
+      0,
+      492
+    ],
+    "val_range": [
+      492,
+      656
+    ],
+    "test_range": [
+      656,
+      820
+    ]
+  },
+  "data_regime_assessment": {
+    "too_flat": false,
+    "too_periodic": false,
+    "moderate_complexity": true,
+    "label": "moderate_complexity"
+  },
+  "tested_noise_configs": [
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.34863322339951996,
+      "visible_rmse": 0.48394596576690674,
+      "amplitude_collapse": 0.7937548160552979,
+      "hidden_rmse": 0.22821621596813202,
+      "hidden_pearson": -0.5085729360580444,
+      "hidden_environment_correlation": 0.048049792647361755,
+      "residual_dominates_fraction": 0.07180212810635567,
+      "lv_residual_ratio_mean": 0.8735129237174988,
+      "best_epoch": 2
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.3217217311263084,
+      "visible_rmse": 0.49233606457710266,
+      "amplitude_collapse": 0.6992484331130981,
+      "hidden_rmse": 0.19173471629619598,
+      "hidden_pearson": 0.37832915782928467,
+      "hidden_environment_correlation": -0.039214640855789185,
+      "residual_dominates_fraction": 0.029963992536067963,
+      "lv_residual_ratio_mean": 0.8362769285837809,
+      "best_epoch": 2
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.22804938529928526,
+      "visible_rmse": 0.5232220888137817,
+      "amplitude_collapse": 0.6170474886894226,
+      "hidden_rmse": 0.17296352982521057,
+      "hidden_pearson": 0.5508077144622803,
+      "hidden_environment_correlation": -0.038819510489702225,
+      "residual_dominates_fraction": 0.19560185571511587,
+      "lv_residual_ratio_mean": 0.7192853093147278,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.25026089360471815,
+      "visible_rmse": 0.4987921714782715,
+      "amplitude_collapse": 0.6679642796516418,
+      "hidden_rmse": 0.18465828895568848,
+      "hidden_pearson": 0.7750564813613892,
+      "hidden_environment_correlation": 0.21703264117240906,
+      "residual_dominates_fraction": 0.006087105488404632,
+      "lv_residual_ratio_mean": 0.7183442314465841,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.23343942115704214,
+      "visible_rmse": 0.540471613407135,
+      "amplitude_collapse": 0.4441405236721039,
+      "hidden_rmse": 0.1765052229166031,
+      "hidden_pearson": 0.75309818983078,
+      "hidden_environment_correlation": -0.0419529490172863,
+      "residual_dominates_fraction": 0.37787208954493207,
+      "lv_residual_ratio_mean": 0.924559493859609,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.3259642707494398,
+      "visible_rmse": 0.4923444092273712,
+      "amplitude_collapse": 0.7177021503448486,
+      "hidden_rmse": 0.20155009627342224,
+      "hidden_pearson": 0.639788031578064,
+      "hidden_environment_correlation": 0.0026815743185579777,
+      "residual_dominates_fraction": 0.0926354577143987,
+      "lv_residual_ratio_mean": 0.881864090760549,
+      "best_epoch": 3
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.3419083209087451,
+      "visible_rmse": 0.4992711842060089,
+      "amplitude_collapse": 0.6896221041679382,
+      "hidden_rmse": 0.21714860200881958,
+      "hidden_pearson": -0.5245050191879272,
+      "hidden_environment_correlation": 0.08446121215820312,
+      "residual_dominates_fraction": 0.05161179726322492,
+      "lv_residual_ratio_mean": 0.8503421942392985,
+      "best_epoch": 2
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.22322736475616692,
+      "visible_rmse": 0.5145736932754517,
+      "amplitude_collapse": 0.6696814298629761,
+      "hidden_rmse": 0.20202507078647614,
+      "hidden_pearson": -0.0802357941865921,
+      "hidden_environment_correlation": 0.025189591571688652,
+      "residual_dominates_fraction": 0.03326474688947201,
+      "lv_residual_ratio_mean": 0.7664138277371725,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.34196618795394895,
+      "visible_rmse": 0.5224388837814331,
+      "amplitude_collapse": 0.6775183081626892,
+      "hidden_rmse": 0.24984285235404968,
+      "hidden_pearson": 0.15656331181526184,
+      "hidden_environment_correlation": -0.042017631232738495,
+      "residual_dominates_fraction": 0.0,
+      "lv_residual_ratio_mean": 0.7137605547904968,
+      "best_epoch": 1
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.323169546512266,
+      "visible_rmse": 0.49954620003700256,
+      "amplitude_collapse": 0.6754066348075867,
+      "hidden_rmse": 0.1991528868675232,
+      "hidden_pearson": 0.18620651960372925,
+      "hidden_environment_correlation": -0.037306033074855804,
+      "residual_dominates_fraction": 0.0353223600735267,
+      "lv_residual_ratio_mean": 0.8152148723602295,
+      "best_epoch": 3
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.23988266649345558,
+      "visible_rmse": 0.524996817111969,
+      "amplitude_collapse": 0.5964938402175903,
+      "hidden_rmse": 0.23234599828720093,
+      "hidden_pearson": -0.39918044209480286,
+      "hidden_environment_correlation": 0.07762228697538376,
+      "residual_dominates_fraction": 0.0463820310930411,
+      "lv_residual_ratio_mean": 0.6034877896308899,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.33743087314069276,
+      "visible_rmse": 0.5018473267555237,
+      "amplitude_collapse": 0.6643112301826477,
+      "hidden_rmse": 0.21047964692115784,
+      "hidden_pearson": -0.7663263082504272,
+      "hidden_environment_correlation": -0.09254839271306992,
+      "residual_dominates_fraction": 0.03545096144080162,
+      "lv_residual_ratio_mean": 0.7741806705792745,
+      "best_epoch": 3
+    }
+  ],
+  "selected_noise_config": {
+    "training_input_noise": 0.01,
+    "training_rollout_noise": 0.02,
+    "training_latent_perturb": 0.02
+  },
+  "selected_noise_reason": "选中该配置是因为它在验证集上以 hidden recovery 为核心的综合评分最优，同时兼顾了 hidden/environment 解耦和 visible 重构质量。",
+  "metrics": {
+    "hidden_rmse": 0.12528011202812195,
+    "hidden_pearson": 0.9466785192489624,
+    "hidden_val_rmse": 0.06386861205101013,
+    "hidden_val_pearson": 0.9454968571662903,
+    "sliding_window_visible_rmse": 0.8113820552825928,
+    "sliding_window_visible_pearson": 0.5592092275619507,
+    "peak_visible_error": 0.302388995885849,
+    "amplitude_collapse_score": 0.0938720852136612,
+    "selected_rollout_noise": 0.02
+  },
+  "disentanglement_metrics": {
+    "hidden_environment_correlation": 0.039610639214515686,
+    "hidden_autocorrelation": 0.8740373253822327,
+    "environment_autocorrelation": 0.8640120029449463,
+    "hidden_roughness": 0.08467698842287064,
+    "environment_roughness": 0.2733239531517029
+  },
+  "lv_guidance_metrics": {
+    "lv_residual_ratio_mean": 1.4323906501134236,
+    "lv_residual_ratio_std": 0.43310726682345074,
+    "residual_dominates_fraction": 0.8381773034731547,
+    "lv_energy_fraction": 0.3095802068710327,
+    "visible_lv_residual_ratio_mean": 1.4324395259221394,
+    "visible_residual_dominates_fraction": 0.8334190646807352,
+    "visible_lv_energy_fraction": 0.31053510308265686
+  },
+  "particle_rollout_metrics": {
+    "particle_rollout_helpful": false,
+    "single_rollout_visible_rmse": 0.8113514184951782,
+    "particle_rollout_visible_rmse": 0.8113820552825928
+  },
+  "training_diagnostics": {
+    "best_epoch": 32,
+    "early_best_epoch": false
+  },
+  "diagnosis": "good hidden recovery",
+  "explicit_conclusion": "Hidden recovery: RMSE=0.1253, Pearson=0.9467. 隐藏物种恢复质量良好。 Hidden/environment 解耦良好。"
+}

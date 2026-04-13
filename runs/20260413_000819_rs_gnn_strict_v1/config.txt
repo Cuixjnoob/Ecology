@@ -1,0 +1,15 @@
+Architecture: v1
+d_model: 48
+num_blocks: 2
+num_heads: 4
+epochs: 150
+lr: 0.001
+train_ratio: 0.75
+smooth_lambda: 0.05
+var_lambda: 0.2
+seed: 42
+num_params: 107139
+
+Final Pearson: 0.8321
+Final RMSE: 0.1620
+Best epoch: 149

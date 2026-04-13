@@ -1,6 +1,6 @@
 # CLAUDE.md — 项目入口记忆文件
 
-> 最后更新：2026-04-12（精简清理后）  
+> 最后更新：2026-04-12（方法论转向：从预测到重构，hidden recovery-centric）  
 > 维护方式：每次重大代码/实验修改后必须同步更新本文件
 
 ---
@@ -8,7 +8,8 @@
 ## 一、项目一句话
 
 **部分观测生态动力学中的隐藏物种推断与生态一致性建模。**  
-核心不在预测未来，而在从 visible dynamics 中恢复 hidden ecological structure，并用生态一致性与额外解释力来检验其有效性。
+核心是从 visible dynamics 中恢复 hidden ecological structure，并用生态一致性与额外解释力来检验其有效性。
+**不做未来预测。** Visible rollout 仅作为训练信号（在已知数据内重构），评估以 hidden recovery quality 为核心。
 
 ---
 
@@ -137,15 +138,14 @@ env_{t+1} = env_t + τ_env × (target - env_t) + noise
 6. **amplitude collapse score**：预测振幅 vs 真值振幅比
 7. **LV/residual 能量分析**：能量占比、visible-specific 比值
 
-### 验证集综合分数（early stopping 用）
+### 验证集综合分数（early stopping 用，hidden recovery-centric）
 ```python
-val_score = 0.30 * sliding_visible_rmse
-           + 0.22 * full_context_visible_rmse
-           + 0.15 * peak_visible_error
-           + 0.12 * amplitude_collapse_score
-           + 0.08 * hidden_recovery_rmse
-           + 0.08 * |hidden_env_correlation|
-           + 0.05 * residual_dominates_fraction
+val_score = 0.40 * hidden_recovery_rmse
+           + 0.20 * |hidden_env_correlation|
+           + 0.15 * sliding_visible_rmse
+           + 0.05 * peak_visible_error
+           + 0.10 * amplitude_collapse_score
+           + 0.10 * residual_dominates_fraction
 ```
 
 ---
@@ -168,10 +168,11 @@ val_score = 0.30 * sliding_visible_rmse
 | LV/residual ratio mean | 1.645 |
 | residual dominates fraction | 0.871 |
 
-### 当前主瓶颈
-1. **full-context visible prediction 仍是主要瓶颈**，不是 hidden recovery
+### 当前状态（2026-04-12 方法论转向后）
+1. **Hidden recovery 质量良好**（Pearson 0.90），但需在新 val_score 下重新验证
 2. **residual 分支仍偏强**（dominates fraction 0.87），结构化 LV 分支未充分发挥
-3. **hidden 与 environment 角色分离**在数值上改善（corr 0.099），但在 visible 生成中的功能分工仍不充分
+3. **hidden/env 解耦有效**（corr 0.099），多重约束策略起作用
+4. **不再追求 full-context visible prediction**，该方向已放弃
 
 ---
 

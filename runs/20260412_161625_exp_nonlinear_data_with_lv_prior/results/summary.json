@@ -1,0 +1,160 @@
+{
+  "run_name": "20260412_161625_exp_nonlinear_data_with_lv_prior",
+  "run_dir": "runs\\20260412_161625_exp_nonlinear_data_with_lv_prior",
+  "readme_path": "runs\\20260412_161625_exp_nonlinear_data_with_lv_prior\\README.md",
+  "split_info": {
+    "total_steps": 820,
+    "train_steps": 492,
+    "val_steps": 164,
+    "test_steps": 164,
+    "train_range": [
+      0,
+      492
+    ],
+    "val_range": [
+      492,
+      656
+    ],
+    "test_range": [
+      656,
+      820
+    ]
+  },
+  "data_regime_assessment": {
+    "too_flat": false,
+    "too_periodic": false,
+    "moderate_complexity": true,
+    "label": "moderate_complexity"
+  },
+  "tested_noise_configs": [
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.09880259335041046,
+      "hidden_rmse": 0.1538684219121933,
+      "hidden_pearson": 0.9783948659896851,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.19441573321819305,
+      "hidden_rmse": 0.14494545757770538,
+      "hidden_pearson": 0.9751718044281006,
+      "best_epoch": 3
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.10907548069953918,
+      "hidden_rmse": 0.17096936702728271,
+      "hidden_pearson": 0.9783537983894348,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.01,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.12832494378089904,
+      "hidden_rmse": 0.19919833540916443,
+      "hidden_pearson": 0.970646858215332,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.22098861038684847,
+      "hidden_rmse": 0.1886444240808487,
+      "hidden_pearson": 0.9739934802055359,
+      "best_epoch": 3
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.12345791459083556,
+      "hidden_rmse": 0.19145670533180237,
+      "hidden_pearson": 0.9713870286941528,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.12634994387626647,
+      "hidden_rmse": 0.19643405079841614,
+      "hidden_pearson": 0.9717016220092773,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.02,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.2074486494064331,
+      "hidden_rmse": 0.16385957598686218,
+      "hidden_pearson": 0.969556987285614,
+      "best_epoch": 3
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.14169004261493684,
+      "hidden_rmse": 0.2200034111738205,
+      "hidden_pearson": 0.9677066802978516,
+      "best_epoch": 4
+    },
+    {
+      "training_input_noise": 0.005,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.10302493572235107,
+      "hidden_rmse": 0.16176393628120422,
+      "hidden_pearson": 0.9801114201545715,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.01,
+      "validation_score": 0.10030499696731568,
+      "hidden_rmse": 0.15361088514328003,
+      "hidden_pearson": 0.9728717803955078,
+      "best_epoch": 5
+    },
+    {
+      "training_input_noise": 0.01,
+      "training_rollout_noise": 0.05,
+      "training_latent_perturb": 0.02,
+      "validation_score": 0.1046733945608139,
+      "hidden_rmse": 0.16172514855861664,
+      "hidden_pearson": 0.9745389819145203,
+      "best_epoch": 5
+    }
+  ],
+  "selected_noise_config": {
+    "training_input_noise": 0.005,
+    "training_rollout_noise": 0.01,
+    "training_latent_perturb": 0.01
+  },
+  "selected_noise_reason": "选中该配置是因为它在验证集上以 hidden recovery 为核心的综合评分最优，同时兼顾了 visible 重构质量。",
+  "metrics": {
+    "hidden_test_rmse": 0.12405351549386978,
+    "hidden_test_pearson": 0.9789381623268127,
+    "hidden_val_rmse": 0.09096792340278625,
+    "hidden_val_pearson": 0.9883136749267578,
+    "hidden_train_rmse": 0.11016906052827835,
+    "hidden_train_pearson": 0.9831745028495789,
+    "selected_rollout_noise": 0.01
+  },
+  "training_diagnostics": {
+    "best_epoch": 33,
+    "early_best_epoch": false
+  },
+  "diagnosis": "good hidden recovery",
+  "explicit_conclusion": "Hidden recovery: RMSE=0.1241, Pearson=0.9789. 隐藏物种恢复质量良好。"
+}

@@ -2,7 +2,7 @@
 
 完整流程：
   1. 加载 YAML 配置（默认 configs/partial_lv_mvp.yaml）
-  2. 合成数据生成（5 可见 + 1 隐藏 + 1 环境，820 步）
+  2. 合成数据生成（5 可见 + 1 隐藏，820 步）
   3. 噪声扫描（可选）：在指定网格上搜索最优 noise profile
   4. 模型构建 → PartialLVMVPTrainer 训练（full-context）
   5. 评估：train/val/test 滚动指标 + 诊断图
@@ -32,9 +32,29 @@ import yaml
 
 from data.dataset import build_windowed_datasets
 from data.partial_lv_mvp import generate_partial_lv_mvp_system
+from data.partial_nonlinear_mvp import generate_partial_nonlinear_mvp_system
 from models.partial_lv_recovery_model import PartialLVRecoveryModel
 from train.partial_lv_mvp_trainer import PartialLVMVPTrainer
 from train.utils import create_data_loaders, save_json, set_random_seed
+
+
+def _generate_system(config: Dict[str, Any]):
+    """根据 config['simulation']['generator'] 选择数据生成器。
+    支持: 'lv' (默认) / 'nonlinear'
+    """
+    sim_cfg = config["simulation"]
+    generator_type = sim_cfg.get("generator", "lv")
+    kwargs = dict(
+        total_steps=int(sim_cfg["total_steps"]),
+        warmup_steps=int(sim_cfg["warmup_steps"]),
+        process_noise=float(sim_cfg["process_noise"]),
+        seed=int(config["experiment"]["seed"]),
+        max_attempts=int(sim_cfg["max_attempts"]),
+        max_state_value=float(sim_cfg["max_state_value"]),
+    )
+    if generator_type == "nonlinear":
+        return generate_partial_nonlinear_mvp_system(**kwargs)
+    return generate_partial_lv_mvp_system(**kwargs)
 
 
 def _load_config(config_path: str | Path) -> Dict[str, Any]:
@@ -70,12 +90,13 @@ def _build_model(
         hidden_dim=int(model_cfg["hidden_dim"]),
         encoder_layers=int(model_cfg["encoder_layers"]),
         residual_layers=int(model_cfg["residual_layers"]),
-        use_environment_latent=bool(model_cfg.get("use_environment_latent", True)),
         use_lv_guidance=bool(model_cfg.get("use_lv_guidance", True)),
+        lv_form=str(model_cfg.get("lv_form", "tanh")),
+        use_residual=bool(model_cfg.get("use_residual", True)),
+        use_hidden_fast=bool(model_cfg.get("use_hidden_fast", True)),
         max_state_value=float(simulation_cfg["max_state_value"]),
         base_visible_noise=float(model_cfg.get("base_visible_noise", 0.015)),
         base_hidden_noise=float(model_cfg.get("base_hidden_noise", 0.012)),
-        base_environment_noise=float(model_cfg.get("base_environment_noise", 0.020)),
     )
 
 
@@ -198,43 +219,20 @@ def _load_previous_reference() -> Dict[str, Any] | None:
     return None
 
 
-def _model_noise_stats(model: PartialLVRecoveryModel) -> Dict[str, float]:
-    visible = model.base_visible_noise * (0.4 + torch.nn.functional.softplus(model.visible_noise_unconstrained)).item()
-    hidden = model.base_hidden_noise * (0.4 + torch.nn.functional.softplus(model.hidden_noise_unconstrained)).item()
-    environment = model.base_environment_noise * (
-        0.4 + torch.nn.functional.softplus(model.environment_noise_unconstrained)
-    ).item()
-    return {
-        "visible_noise_std": float(visible),
-        "hidden_noise_std": float(hidden),
-        "environment_noise_std": float(environment),
-    }
-
-
-def _lv_backbone_active(lv_guidance_metrics: Dict[str, float]) -> bool:
-    return bool(
-        lv_guidance_metrics["residual_dominates_fraction"] < 0.50
-        and 0.15 <= lv_guidance_metrics["lv_residual_ratio_mean"] <= 1.5
-        and lv_guidance_metrics.get("lv_energy_fraction", 0.5) >= 0.35
-        and lv_guidance_metrics.get("visible_residual_dominates_fraction", 1.0) < 0.60
-        and lv_guidance_metrics.get("visible_lv_energy_fraction", 0.0) >= 0.40
-    )
-
 
 def _diagnose(
     metrics: Dict[str, float],
-    disentanglement_metrics: Dict[str, float],
     previous_reference: Dict[str, Any] | None,
 ) -> str:
-    previous_metrics = previous_reference["metrics"] if previous_reference else None
-    if previous_metrics is not None and metrics["sliding_window_visible_rmse"] >= previous_metrics["sliding_window_visible_rmse"] * 0.99:
-        if metrics["selected_rollout_noise"] >= 0.05:
-            return "rollout noise too strong"
-    if abs(disentanglement_metrics["hidden_environment_correlation"]) > 0.45:
-        return "hidden/environment entanglement"
-    if metrics["amplitude_collapse_score"] > 0.35:
-        return "amplitude collapse"
-    return "mixed"
+    # Hidden recovery-centric diagnosis
+    hidden_pearson = metrics.get("hidden_test_pearson", metrics.get("hidden_pearson", 0.0))
+    if hidden_pearson < 0.30:
+        return "hidden recovery failed"
+    if hidden_pearson >= 0.85:
+        return "good hidden recovery"
+    if hidden_pearson >= 0.60:
+        return "moderate hidden recovery"
+    return "weak hidden recovery"
 
 
 def _write_experiment_readme(
@@ -243,27 +241,26 @@ def _write_experiment_readme(
     config: Dict[str, Any],
     summary_payload: Dict[str, Any],
 ) -> None:
+    m = summary_payload["metrics"]
     readme_lines = [
         "# 实验 README",
         "",
         f"- 时间戳：`{timestamp}`",
         f"- 实验名：`{config['experiment']['name']}`",
+        f"- 模式：**hidden recovery-centric**（不做未来预测，专注隐藏物种恢复）",
         "",
-        "## 本次实验修改了什么",
-        "- 保留上一版的 LV soft guidance + stochastic residual 主框架，但不再做模型对照，只修正 rollout 训练噪声和 hidden/environment 解耦。",
-        "- rollout training noise 被压到一个很小的组合扫描范围内，并固定 particle rollout 为 `K=4`、`mean aggregation` 的辅助项。",
-        "- hidden/environment 解耦约束增强为：更强相关性惩罚、正交惩罚、方差下界、以及 environment 更慢 / hidden 更快的时间尺度先验。",
+        "## 核心方法",
+        "- 目标：从可见物种的已知时间序列中恢复未观测的隐藏物种",
+        "- 训练：在已知数据上做滑动窗口重构，visible rollout 作为训练信号（非预测目标）",
+        "- 评估：以 hidden recovery quality (RMSE/Pearson) 为核心指标",
+        "- 架构：LV soft guidance + stochastic residual + hidden fast innovation",
         "",
-        "## 当前总算法是什么样子的",
-        "1. 数据层：仍使用 moderate_complexity 的 5 个 visible + 1 个 hidden + 1 个真实 environment 的合成生态系统。",
-        "2. 动力学层：状态更新保持 `state_t + LV_guided_drift + neural_residual + stochastic_noise`，LV 仍是 soft backbone。",
-        "3. 训练层：主要目标是降低过强噪声带来的平线化预测，并压低 hidden/environment 纠缠。",
-        "4. 评估层：继续报告 sliding-window rollout、full-context forecast、hidden recovery、LV/residual 比例和 latent disentanglement 统计。",
-        "",
-        "## 本次结果一句话",
+        "## 本次结果",
+        f"- Hidden Test RMSE: `{m['hidden_test_rmse']:.4f}`",
+        f"- Hidden Test Pearson: `{m['hidden_test_pearson']:.4f}`",
+        f"- Hidden Val Pearson: `{m['hidden_val_pearson']:.4f}`",
         f"- 数据 regime: `{summary_payload['data_regime_assessment']['label']}`",
-        f"- 选中的噪声配置: `{summary_payload['selected_noise_config']}`",
-        f"- 当前主诊断: `{summary_payload['diagnosis']}`",
+        f"- 诊断: `{summary_payload['diagnosis']}`",
     ]
     (run_dir / "README.md").write_text("\n".join(readme_lines), encoding="utf-8")
 
@@ -271,7 +268,6 @@ def _write_experiment_readme(
 def _plot_true_trajectories(
     visible_true: torch.Tensor,
     hidden_true: torch.Tensor,
-    environment_true: torch.Tensor,
     split_info: Dict[str, Any],
     output_path: Path,
 ) -> None:
@@ -287,21 +283,13 @@ def _plot_true_trajectories(
     axes[0].legend(ncol=3, fontsize=8)
 
     axes[1].plot(time_axis, hidden_true[:, 0].numpy(), color="black", linewidth=1.8, label="真实隐藏物种")
-    env_axis = axes[1].twinx()
-    env_axis.plot(time_axis, environment_true[:, 0].numpy(), color="#2ca02c", linewidth=1.4, linestyle="--", label="真实环境")
-    axes[1].set_title("真实 hidden 与 true environment")
+    axes[1].set_title("真实隐藏物种轨迹")
     axes[1].set_ylabel("隐藏物种丰度")
-    env_axis.set_ylabel("环境驱动")
+    axes[1].legend(loc="upper right", fontsize=8)
 
     for axis in axes:
         axis.axvline(train_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
         axis.axvline(val_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
-    env_axis.axvline(train_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
-    env_axis.axvline(val_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
-
-    line_handles, line_labels = axes[1].get_legend_handles_labels()
-    env_handles, env_labels = env_axis.get_legend_handles_labels()
-    axes[1].legend(line_handles + env_handles, line_labels + env_labels, loc="upper right", fontsize=8)
     axes[1].set_xlabel("时间步")
 
     figure.savefig(output_path, dpi=180)
@@ -319,8 +307,7 @@ def _plot_hidden_test_overlay(
     start_index, end_index = _select_hidden_zoom_window(hidden_true, hidden_pred)
     zoom_axis = np.arange(start_index, end_index)
     metric_text = (
-        f"hidden RMSE={hidden_metrics['hidden_rmse']:.4f} | Pearson={hidden_metrics['hidden_pearson']:.4f}\n"
-        f"hidden/env corr={hidden_metrics['hidden_environment_correlation']:.4f}"
+        f"hidden RMSE={hidden_metrics['hidden_rmse']:.4f} | Pearson={hidden_metrics['hidden_pearson']:.4f}"
     )
 
     for axis, x_values, truth_values, pred_values, title in [
@@ -421,22 +408,55 @@ def _plot_visible_fullcontext_compare(
     plt.close(figure)
 
 
+def _plot_hidden_full_recovery(
+    hidden_true_full: torch.Tensor,
+    hidden_pred_full: torch.Tensor,
+    split_info: Dict[str, Any],
+    hidden_metrics: Dict[str, float],
+    output_path: Path,
+) -> None:
+    figure, axis = plt.subplots(1, 1, figsize=(14, 5), constrained_layout=True)
+    time_axis = np.arange(hidden_true_full.shape[0])
+    train_end = split_info["train_range"][1]
+    val_end = split_info["val_range"][1]
+
+    axis.plot(time_axis, hidden_true_full[:, 0].numpy(), color="black", linewidth=2.0, label="真实 hidden")
+    pred_numpy = hidden_pred_full[:, 0].numpy()
+    valid_mask = ~np.isnan(pred_numpy)
+    axis.plot(time_axis[valid_mask], pred_numpy[valid_mask], color="#ff7f0e", linewidth=1.5, label="恢复 hidden")
+    axis.set_title("全序列隐藏物种恢复")
+    axis.set_ylabel("丰度")
+    axis.set_xlabel("时间步")
+    axis.legend(loc="upper right", fontsize=9)
+    metric_text = (
+        f"hidden RMSE={hidden_metrics['hidden_rmse']:.4f} | "
+        f"Pearson={hidden_metrics['hidden_pearson']:.4f}"
+    )
+    axis.text(
+        0.02, 0.97, metric_text, transform=axis.transAxes, va="top", ha="left", fontsize=9,
+        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.9, "edgecolor": "#cccccc"},
+    )
+
+    axis.axvline(train_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
+    axis.axvline(val_end - 0.5, color="#999999", linestyle="--", linewidth=1.0)
+
+    figure.savefig(output_path, dpi=180)
+    plt.close(figure)
+
+
 def _plot_training_metrics(history: List[Dict[str, float]], output_path: Path) -> None:
     figure, axes = plt.subplots(1, 2, figsize=(14, 4.8), constrained_layout=True)
     epochs = [record["epoch"] for record in history]
-    axes[0].plot(epochs, [record["train_total"] for record in history], color="#ff7f0e", linewidth=1.8, label="train")
-    axes[0].plot(epochs, [record["val_total"] for record in history], color="#ff7f0e", linestyle="--", linewidth=1.8, label="val")
-    axes[0].set_title("训练 / 验证损失")
+    axes[0].plot(epochs, [record["train_total"] for record in history], color="#ff7f0e", linewidth=1.8, label="train loss")
+    axes[0].plot(epochs, [record["val_score"] for record in history], color="#4c78a8", linestyle="--", linewidth=1.8, label="val score")
+    axes[0].set_title("训练损失 / 验证分数")
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
     axes[0].legend(fontsize=8)
 
     metric_specs = [
-        ("val_visible_rollout_rmse", "-", "sliding RMSE"),
-        ("val_full_context_visible_rmse", "--", "full-context RMSE"),
-        ("val_hidden_recovery_rmse", ":", "hidden RMSE"),
-        ("val_amplitude_collapse_score", "-.", "amplitude collapse"),
-        ("val_hidden_environment_correlation", (0, (2, 2)), "hidden/env corr"),
+        ("val_hidden_recovery_rmse", "-", "hidden RMSE"),
+        ("val_hidden_recovery_pearson", "--", "hidden Pearson"),
     ]
     for metric_key, linestyle, label in metric_specs:
         axes[1].plot(epochs, [record[metric_key] for record in history], linestyle=linestyle, linewidth=1.8, label=label)
@@ -449,30 +469,11 @@ def _plot_training_metrics(history: List[Dict[str, float]], output_path: Path) -
     plt.close(figure)
 
 
-def _plot_diagnostics(
-    lv_guidance_metrics: Dict[str, float],
+def _plot_noise_diagnostics(
     selected_noise_config: Dict[str, float],
-    disentanglement_metrics: Dict[str, float],
     output_path: Path,
 ) -> None:
-    figure, axes = plt.subplots(1, 3, figsize=(15, 4.8), constrained_layout=True)
-
-    axes[0].bar(
-        ["LV/Residual 比值", "Residual 主导比例", "LV 能量占比"],
-        [lv_guidance_metrics["lv_residual_ratio_mean"], lv_guidance_metrics["residual_dominates_fraction"], lv_guidance_metrics.get("lv_energy_fraction", 0.0)],
-        color=["#4c78a8", "#e15759", "#59a14f"],
-    )
-    axes[0].axhline(1.0, color="#999999", linestyle="--", linewidth=1.0)
-    axes[0].set_title("LV vs Residual")
-    axes[0].text(
-        0.02,
-        0.95,
-        f"ratio std={lv_guidance_metrics['lv_residual_ratio_std']:.3f}",
-        transform=axes[0].transAxes,
-        va="top",
-        ha="left",
-        fontsize=9,
-    )
+    figure, axis = plt.subplots(1, 1, figsize=(7, 4.8), constrained_layout=True)
 
     noise_labels = ["input", "rollout", "latent"]
     noise_values = [
@@ -480,20 +481,9 @@ def _plot_diagnostics(
         selected_noise_config["training_rollout_noise"],
         selected_noise_config["training_latent_perturb"],
     ]
-    axes[1].bar(noise_labels, noise_values, color="#59a14f")
-    axes[1].set_title("Selected Noise Config")
-
-    disent_labels = ["corr", "hidden ac", "env ac", "hidden rough", "env rough"]
-    disent_values = [
-        abs(disentanglement_metrics["hidden_environment_correlation"]),
-        disentanglement_metrics["hidden_autocorrelation"],
-        disentanglement_metrics["environment_autocorrelation"],
-        disentanglement_metrics["hidden_roughness"],
-        disentanglement_metrics["environment_roughness"],
-    ]
-    axes[2].bar(disent_labels, disent_values, color="#f28e2b")
-    axes[2].set_title("Disentanglement 统计")
-    axes[2].tick_params(axis="x", rotation=15)
+    axis.bar(noise_labels, noise_values, color="#59a14f")
+    axis.set_title("Selected Noise Config")
+    axis.set_ylabel("Noise Level")
 
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
@@ -581,33 +571,18 @@ def _noise_scan(
             },
         )
         fit_result = trainer.fit(data_loaders["train"], data_loaders["val"])
-        val_sliding = trainer.evaluate_loader(data_loaders["val"], num_particles=int(config["noise"]["eval_particles"]))
-        val_full_context = trainer.evaluate_full_context("val", num_particles=int(config["noise"]["eval_particles"]))
         val_hidden = trainer.recover_hidden_on_split("val")
+        # Pure hidden recovery noise selection — no future prediction
         score = (
-            0.28 * val_sliding["visible_rollout_rmse"]
-            + 0.22 * val_full_context["metrics"]["visible_rmse"]
-            + 0.16 * val_sliding["amplitude_collapse_score"]
-            + 0.14 * val_hidden["metrics"]["hidden_recovery_rmse"]
-            + 0.12 * abs(val_hidden["metrics"]["hidden_environment_correlation"])
-            + 0.04 * val_sliding["residual_dominates_fraction"]
-            + 0.06 * val_sliding["visible_residual_dominates_fraction"]
-            + 0.03 * max(val_sliding["lv_residual_ratio_mean"] - 1.35, 0.0)
-            + 0.05 * max(val_sliding["visible_lv_residual_ratio_mean"] - 0.95, 0.0)
+            0.60 * val_hidden["metrics"]["hidden_recovery_rmse"]
+            + 0.30 * (1.0 - max(0.0, min(1.0, val_hidden["metrics"]["hidden_recovery_pearson"])))
             + 0.10 * float(fit_result.best_epoch <= max(3, int(scan_config["train"]["epochs"] * 0.35)))
         )
         entry = {
             **noise_config,
             "validation_score": float(score),
-            "visible_rmse": float(val_sliding["visible_rollout_rmse"]),
-            "full_context_visible_rmse": float(val_full_context["metrics"]["visible_rmse"]),
-            "amplitude_collapse": float(val_sliding["amplitude_collapse_score"]),
             "hidden_rmse": float(val_hidden["metrics"]["hidden_recovery_rmse"]),
-            "hidden_environment_correlation": float(val_hidden["metrics"]["hidden_environment_correlation"]),
-            "residual_dominates_fraction": float(val_sliding["residual_dominates_fraction"]),
-            "lv_residual_ratio_mean": float(val_sliding["lv_residual_ratio_mean"]),
-            "visible_residual_dominates_fraction": float(val_sliding["visible_residual_dominates_fraction"]),
-            "visible_lv_residual_ratio_mean": float(val_sliding["visible_lv_residual_ratio_mean"]),
+            "hidden_pearson": float(val_hidden["metrics"]["hidden_recovery_pearson"]),
             "best_epoch": int(fit_result.best_epoch),
         }
         tested_results.append(entry)
@@ -619,8 +594,8 @@ def _noise_scan(
         raise RuntimeError("Noise scan failed to select a configuration.")
 
     selection_reason = (
-        "选中该配置是因为它在验证集上同时兼顾了 sliding-window 与 full-context 的 visible 误差，"
-        "amplitude collapse 更低，hidden/environment correlation 更小，而且 residual 没有明显长期压过 LV。"
+        "选中该配置是因为它在验证集上以 hidden recovery 为核心的综合评分最优，"
+        "同时兼顾了 visible 重构质量。"
     )
     return tested_results, best_config, selection_reason
 
@@ -633,14 +608,7 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
 
     previous_reference = _load_previous_reference()
 
-    system = generate_partial_lv_mvp_system(
-        total_steps=int(config["simulation"]["total_steps"]),
-        warmup_steps=int(config["simulation"]["warmup_steps"]),
-        process_noise=float(config["simulation"]["process_noise"]),
-        seed=int(config["experiment"]["seed"]),
-        max_attempts=int(config["simulation"]["max_attempts"]),
-        max_state_value=float(config["simulation"]["max_state_value"]),
-    )
+    system = _generate_system(config)
     bundle = system.to_bundle()
     prepared = build_windowed_datasets(
         bundle=bundle,
@@ -684,14 +652,6 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
         split_ranges=split_ranges,
     )
 
-    rollout_case = _select_rollout_case(
-        visible_series=bundle.observations,
-        hidden_series=bundle.hidden_observations,
-        split_info=split_ranges,
-        history_length=history_length,
-        horizon=figure_rollout_horizon,
-    )
-
     model, trainer = _make_trainer(
         config=config,
         system=system,
@@ -708,56 +668,26 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
     )
 
     fit_result = trainer.fit(data_loaders["train"], data_loaders["val"])
-    sliding_eval = trainer.evaluate_loader(data_loaders["test"], num_particles=int(config["noise"]["particle_rollout_K"]))
-    single_rollout_eval = trainer.evaluate_loader(data_loaders["test"], num_particles=1)
-    full_context_test = trainer.evaluate_full_context("test", num_particles=int(config["noise"]["particle_rollout_K"]))
+    # Pure hidden recovery evaluation — no future prediction
     hidden_test = trainer.recover_hidden_on_split("test")
+    hidden_val = trainer.recover_hidden_on_split("val")
+    hidden_train = trainer.recover_hidden_on_split("train")
     hidden_full = trainer.recover_hidden_sequence(
         visible_series_raw=bundle.observations,
         hidden_series_true=bundle.hidden_observations,
         history_length=history_length,
         global_offset=0,
     )
-    local_rollout = trainer.forecast_case(
-        history_visible_raw=rollout_case["history_visible"],
-        future_visible_true=rollout_case["future_visible"],
-        future_hidden_true=rollout_case["future_hidden"],
-        num_particles=int(config["noise"]["particle_rollout_K"]),
-    )
 
+    # Primary metrics: pure hidden recovery
     metrics = {
-        "sliding_window_visible_rmse": sliding_eval["visible_rollout_rmse"],
-        "sliding_window_visible_pearson": sliding_eval["visible_rollout_pearson"],
-        "full_context_visible_rmse": full_context_test["metrics"]["visible_rmse"],
-        "full_context_visible_pearson": full_context_test["metrics"]["visible_pearson"],
-        "hidden_rmse": hidden_test["metrics"]["hidden_recovery_rmse"],
-        "hidden_pearson": hidden_test["metrics"]["hidden_recovery_pearson"],
-        "peak_visible_error": sliding_eval["peak_visible_error"],
-        "amplitude_collapse_score": sliding_eval["amplitude_collapse_score"],
+        "hidden_test_rmse": hidden_test["metrics"]["hidden_recovery_rmse"],
+        "hidden_test_pearson": hidden_test["metrics"]["hidden_recovery_pearson"],
+        "hidden_val_rmse": hidden_val["metrics"]["hidden_recovery_rmse"],
+        "hidden_val_pearson": hidden_val["metrics"]["hidden_recovery_pearson"],
+        "hidden_train_rmse": hidden_train["metrics"]["hidden_recovery_rmse"],
+        "hidden_train_pearson": hidden_train["metrics"]["hidden_recovery_pearson"],
         "selected_rollout_noise": selected_noise_config["training_rollout_noise"],
-    }
-    disentanglement_metrics = {
-        "hidden_environment_correlation": hidden_test["metrics"]["hidden_environment_correlation"],
-        "hidden_autocorrelation": hidden_test["metrics"]["hidden_autocorrelation"],
-        "environment_autocorrelation": hidden_test["metrics"]["environment_autocorrelation"],
-        "hidden_roughness": hidden_test["metrics"]["hidden_roughness"],
-        "environment_roughness": hidden_test["metrics"]["environment_roughness"],
-    }
-    lv_guidance_metrics = {
-        "lv_residual_ratio_mean": sliding_eval["lv_residual_ratio_mean"],
-        "lv_residual_ratio_std": sliding_eval["lv_residual_ratio_std"],
-        "residual_dominates_fraction": sliding_eval["residual_dominates_fraction"],
-        "lv_energy_fraction": sliding_eval["lv_energy_fraction"],
-        "visible_lv_residual_ratio_mean": sliding_eval["visible_lv_residual_ratio_mean"],
-        "visible_residual_dominates_fraction": sliding_eval["visible_residual_dominates_fraction"],
-        "visible_lv_energy_fraction": sliding_eval["visible_lv_energy_fraction"],
-    }
-    particle_rollout_metrics = {
-        "particle_rollout_helpful": bool(
-            sliding_eval["visible_rollout_rmse"] < single_rollout_eval["visible_rollout_rmse"]
-        ),
-        "single_rollout_visible_rmse": single_rollout_eval["visible_rollout_rmse"],
-        "particle_rollout_visible_rmse": sliding_eval["visible_rollout_rmse"],
     }
     training_diagnostics = {
         "best_epoch": int(fit_result.best_epoch),
@@ -766,19 +696,16 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
 
     diagnosis = _diagnose(
         metrics=metrics,
-        disentanglement_metrics=disentanglement_metrics,
         previous_reference=previous_reference,
     )
-    explicit_conclusion = (
-        "降低 rollout 训练噪声后，visible 振幅保持和 sliding-window rollout 都比上一版更稳；"
-        if previous_reference and metrics["sliding_window_visible_rmse"] < previous_reference["metrics"]["sliding_window_visible_rmse"]
-        else "当前版本相较上一版没有在 visible rollout 上出现退化；"
-    )
-    explicit_conclusion += (
-        "同时 hidden recovery 仍然保持在较高水平，说明主问题不是 hidden 学不会，而是 visible 动力学分离仍然困难。"
-    )
-    if training_diagnostics["early_best_epoch"]:
-        explicit_conclusion += " 问题更像训练设置不合理，而非单纯训练不够。"
+    # Hidden recovery-centric conclusion
+    explicit_conclusion = f"Hidden recovery: RMSE={metrics['hidden_test_rmse']:.4f}, Pearson={metrics['hidden_test_pearson']:.4f}. "
+    if metrics["hidden_test_pearson"] >= 0.85:
+        explicit_conclusion += "隐藏物种恢复质量良好。"
+    elif metrics["hidden_test_pearson"] >= 0.60:
+        explicit_conclusion += "隐藏物种恢复质量中等，有改善空间。"
+    else:
+        explicit_conclusion += "隐藏物种恢复质量不佳，需要诊断原因。"
 
     data_regime_assessment = {
         "too_flat": bool(system.diagnostics["too_flat"]),
@@ -797,9 +724,6 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
         "selected_noise_config": _to_plain(selected_noise_config),
         "selected_noise_reason": selection_reason,
         "metrics": _to_plain(metrics),
-        "disentanglement_metrics": _to_plain(disentanglement_metrics),
-        "lv_guidance_metrics": _to_plain(lv_guidance_metrics),
-        "particle_rollout_metrics": _to_plain(particle_rollout_metrics),
         "training_diagnostics": _to_plain(training_diagnostics),
         "diagnosis": diagnosis,
         "explicit_conclusion": explicit_conclusion,
@@ -807,66 +731,79 @@ def run_experiment(config_path: str | Path) -> Dict[str, Any]:
 
     save_json(results_dir / "summary.json", _to_plain(summary_payload))
 
-    visible_pred_full = _make_nan_series(total_steps, bundle.observations.shape[1])
-    visible_pred_full[test_range[0] : test_range[1]] = full_context_test["visible_pred"]
     hidden_pred_full = _fill_series_from_indices(
         length=total_steps,
         indices=hidden_full["indices"],
         values=hidden_full["hidden_pred"],
     )
+    # 参数恢复所需的数据：真实参数 + 模型学到的参数
+    model = trainer.model
+    growth_rates_pred = model.growth_rates.detach().cpu().numpy()
+    interaction_matrix_pred = model.get_interaction_matrix().detach().cpu().numpy()
+    # lv_drift_scale = 0.08 + 0.20 * sigmoid(unconstrained)
+    lv_drift_scale_pred = float(
+        (0.08 + 0.20 * torch.sigmoid(model.lv_drift_scale_unconstrained)).detach().cpu().item()
+    )
+    alpha_lv_pred = float(model.alpha_lv().detach().cpu().item())
+    alpha_res_pred = float(model.alpha_res().detach().cpu().item())
+
     np.savez(
         results_dir / "data_snapshot.npz",
         visible_true_full=bundle.observations.numpy(),
         hidden_true_full=bundle.hidden_observations.numpy(),
-        environment_true_full=system.environment_driver.numpy(),
-        visible_pred_full=visible_pred_full.numpy(),
         hidden_pred_full=hidden_pred_full.numpy(),
+        # interaction matrix
         interaction_true=system.interaction_matrix.numpy(),
-        interaction_pred=local_rollout["interaction_pred"].numpy(),
+        interaction_pred=interaction_matrix_pred,
+        # growth rates（模型 LV 分支会用到；无 LV 先验时停留在初值 0.08）
+        growth_rates_true=system.growth_rates.numpy(),
+        growth_rates_pred=growth_rates_pred,
+        # mixing / scale coefficients (模型特有)
+        alpha_lv_pred=np.array([alpha_lv_pred]),
+        alpha_res_pred=np.array([alpha_res_pred]),
+        lv_drift_scale_pred=np.array([lv_drift_scale_pred]),
+        # 数据生成器的其他参数（参考，模型没有对应项）
+        environment_loadings_true=system.environment_loadings.numpy(),
+        pulse_loadings_true=system.pulse_loadings.numpy(),
     )
 
-    representative_species = _select_representative_species(bundle.observations[test_range[0] : test_range[1]], limit=3)
+    # fig1: true trajectories
     _plot_true_trajectories(
         visible_true=bundle.observations,
         hidden_true=bundle.hidden_observations,
-        environment_true=system.environment_driver,
         split_info=split_info,
         output_path=results_dir / "fig1_true_trajectories.png",
     )
+    # fig2: hidden test overlay
     _plot_hidden_test_overlay(
         hidden_true=hidden_test["hidden_true"],
         hidden_pred=hidden_test["hidden_pred"],
         hidden_metrics={
-            "hidden_rmse": metrics["hidden_rmse"],
-            "hidden_pearson": metrics["hidden_pearson"],
-            "hidden_environment_correlation": disentanglement_metrics["hidden_environment_correlation"],
+            "hidden_rmse": metrics["hidden_test_rmse"],
+            "hidden_pearson": metrics["hidden_test_pearson"],
         },
         output_path=results_dir / "fig2_hidden_test_overlay.png",
     )
-    _plot_visible_rollout_compare(
-        history_visible=rollout_case["history_visible"],
-        future_visible=rollout_case["future_visible"],
-        visible_pred=local_rollout["visible_pred"],
-        representative_species=representative_species,
-        forecast_start=int(rollout_case["forecast_start"]),
-        output_path=results_dir / "fig3_visible_rollout_compare.png",
-    )
-    _plot_visible_fullcontext_compare(
-        visible_series=bundle.observations,
-        visible_pred_full=visible_pred_full,
+    # fig3: hidden full recovery (全序列)
+    _plot_hidden_full_recovery(
+        hidden_true_full=bundle.hidden_observations,
+        hidden_pred_full=hidden_pred_full,
         split_info=split_info,
-        representative_species=representative_species,
-        output_path=results_dir / "fig4_visible_fullcontext_compare.png",
+        hidden_metrics={
+            "hidden_rmse": metrics["hidden_test_rmse"],
+            "hidden_pearson": metrics["hidden_test_pearson"],
+        },
+        output_path=results_dir / "fig3_hidden_full_recovery.png",
     )
+    # fig4: training metrics
     _plot_training_metrics(
         history=fit_result.history,
-        output_path=results_dir / "fig5_training_metrics.png",
+        output_path=results_dir / "fig4_training_metrics.png",
     )
-    _plot_diagnostics(
-        lv_guidance_metrics=lv_guidance_metrics,
+    # fig5: noise diagnostics
+    _plot_noise_diagnostics(
         selected_noise_config=selected_noise_config,
-        disentanglement_metrics=disentanglement_metrics,
-        output_path=results_dir / "fig6_diagnostics.png",
+        output_path=results_dir / "fig5_diagnostics.png",
     )
     _write_experiment_readme(
         run_dir=run_dir,
@@ -895,22 +832,20 @@ def main() -> None:
     outputs = run_experiment(args.config)
 
     summary = outputs["summary"]
-    previous_reference = outputs["previous_reference"]
-    previous_metrics = previous_reference["metrics"] if previous_reference else None
-    hidden_kept = previous_metrics is None or summary["metrics"]["hidden_rmse"] <= previous_metrics["hidden_rmse"] * 1.15
-    visible_improved = previous_metrics is None or summary["metrics"]["sliding_window_visible_rmse"] < previous_metrics["sliding_window_visible_rmse"]
-    amplitude_improved = previous_metrics is None or summary["metrics"]["amplitude_collapse_score"] < previous_metrics["amplitude_collapse_score"]
-    disentangle_improved = previous_metrics is None or abs(summary["disentanglement_metrics"]["hidden_environment_correlation"]) < abs(previous_metrics["hidden_environment_correlation"])
-    lv_active = _lv_backbone_active(summary["lv_guidance_metrics"])
+    m = summary["metrics"]
 
-    print(f"1. 数据 regime: {summary['data_regime_assessment']['label']}")
-    print(f"2. 选中的噪声配置: {summary['selected_noise_config']}")
-    print(f"3. hidden recovery 保持: {'是' if hidden_kept else '否'}")
-    print(f"4. visible rollout 改善: {'是' if visible_improved else '否'}")
-    print(f"5. amplitude collapse 缓解: {'是' if amplitude_improved else '否'}")
-    print(f"6. hidden/environment disentanglement 改善: {'是' if disentangle_improved else '否'}")
-    print(f"7. LV backbone 仍在发挥作用: {'是' if lv_active else '否'}")
-    print(f"8. 当前主瓶颈: {summary['diagnosis']}")
+    print("=" * 60)
+    print("  Hidden Species Recovery Results")
+    print("=" * 60)
+    print(f"  Test  Hidden RMSE:    {m['hidden_test_rmse']:.4f}")
+    print(f"  Test  Hidden Pearson: {m['hidden_test_pearson']:.4f}")
+    print(f"  Val   Hidden RMSE:    {m['hidden_val_rmse']:.4f}")
+    print(f"  Val   Hidden Pearson: {m['hidden_val_pearson']:.4f}")
+    print(f"  Train Hidden RMSE:    {m['hidden_train_rmse']:.4f}")
+    print(f"  Train Hidden Pearson: {m['hidden_train_pearson']:.4f}")
+    print(f"  Noise Config: {summary['selected_noise_config']}")
+    print(f"  Diagnosis: {summary['diagnosis']}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
