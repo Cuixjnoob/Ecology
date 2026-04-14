@@ -29,20 +29,34 @@ from models.cvhi import PosteriorEncoder
 # Multi-channel Posterior Encoder
 # =============================================================================
 class MultiChannelPosteriorEncoder(nn.Module):
-    """k 个独立 PosteriorEncoder → H ∈ R^{B,T,k}."""
+    """k 个独立 PosteriorEncoder → H ∈ R^{B,T,k}.
+
+    若内部 encoder 为 MoG (num_mixture_components>1),
+      forward() 额外返回第三项 logits: (B, T, K, k_hidden).
+    否则返回 (mu, log_sigma) 二元组 (原版向后兼容).
+    """
     def __init__(self, k_hidden: int = 1, **encoder_kwargs):
         super().__init__()
         self.k_hidden = k_hidden
         self.encoders = nn.ModuleList([
             PosteriorEncoder(**encoder_kwargs) for _ in range(k_hidden)
         ])
+        self.K = encoder_kwargs.get("num_mixture_components", 1)
 
-    def forward(self, visible):
-        mus, log_sigmas = [], []
+    def forward(self, visible, residual=None, species_ids=None):
+        if self.K == 1:
+            mus, log_sigmas = [], []
+            for enc in self.encoders:
+                mu, log_sigma = enc(visible, residual=residual, species_ids=species_ids)
+                mus.append(mu); log_sigmas.append(log_sigma)
+            return torch.stack(mus, dim=-1), torch.stack(log_sigmas, dim=-1)
+        mus, log_sigmas, logitss = [], [], []
         for enc in self.encoders:
-            mu, log_sigma = enc(visible)
-            mus.append(mu); log_sigmas.append(log_sigma)
-        return torch.stack(mus, dim=-1), torch.stack(log_sigmas, dim=-1)
+            mu, log_sigma, logits = enc(visible, residual=residual, species_ids=species_ids)
+            mus.append(mu); log_sigmas.append(log_sigma); logitss.append(logits)
+        return (torch.stack(mus, dim=-1),
+                torch.stack(log_sigmas, dim=-1),
+                torch.stack(logitss, dim=-1))
 
 
 # =============================================================================

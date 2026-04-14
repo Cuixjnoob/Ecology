@@ -48,20 +48,42 @@ class PosteriorEncoder(nn.Module):
         num_heads: int = 4,
         num_blocks: int = 3,
         dropout: float = 0.1,
+        num_mixture_components: int = 1,   # K=1 (单高斯, 原版); K>1 = MoG posterior
+        use_coupling_weight: bool = False, # True: 添加 PCA 耦合 per-(t,j) 权重为额外特征
+        coupling_top_k: int = 3,            # top-K PC 作为"集体模式"
+        use_coupling_attn: bool = False,   # True: log(w) 作为 species+temporal attn 加性 bias (路 B+C)
+        use_residual_attn: bool = False,   # True: log|R| 作为 attn bias (R=Δlog x - f_visible(x))
+        # Path B: multi-hidden joint training — species_emb 按 ID 索引, 允许不同 hidden choice 共享 encoder
+        num_total_species: int = None,     # 若 None 则与 num_visible 相等 (原版行为)
     ):
         super().__init__()
         self.num_visible = num_visible
         self.takens_lags = list(takens_lags)
         self.d_model = d_model
+        self.num_heads = num_heads
+        self.K = num_mixture_components
+        self.use_coupling_weight = use_coupling_weight
+        self.coupling_top_k = coupling_top_k
+        self.use_coupling_attn = use_coupling_attn
+        self.use_residual_attn = use_residual_attn
+        self.num_total_species = num_total_species if num_total_species is not None else num_visible
+        self.use_species_id_emb = (num_total_species is not None and num_total_species != num_visible)
 
-        # Feature dim per (t, n): [x, log_x, Takens x, Takens log_x]
-        feat_dim = 2 + 2 * len(self.takens_lags)
+        # Feature dim per (t, n): [x, log_x, Takens x, Takens log_x] (+ coupling_weight if enabled)
+        feat_dim = 2 + 2 * len(self.takens_lags) + (1 if use_coupling_weight else 0)
 
         self.input_proj = nn.Sequential(
             nn.Linear(feat_dim, d_model), nn.GELU(),
             nn.Linear(d_model, d_model), nn.LayerNorm(d_model),
         )
-        self.species_emb = nn.Parameter(torch.randn(num_visible, d_model) * 0.1)
+        # Path B: 若开启 species ID embedding, emb 按 total-species ID 索引 (forward 时 gather)
+        # 否则按 position 索引 (原版)
+        if self.use_species_id_emb:
+            self.species_emb_table = nn.Parameter(torch.randn(self.num_total_species, d_model) * 0.1)
+            self.species_emb = None
+        else:
+            self.species_emb = nn.Parameter(torch.randn(num_visible, d_model) * 0.1)
+            self.species_emb_table = None
 
         self.blocks = nn.ModuleList([
             nn.ModuleDict({
@@ -78,19 +100,54 @@ class PosteriorEncoder(nn.Module):
             for _ in range(num_blocks)
         ])
 
-        # Readout to (μ, log σ) per time step
+        # Readout to (μ, log σ) per time step. K=1 = scalar Gaussian (原版);
+        # K>1 = 混合 K 个分量, 每步输出 (μ_k, log σ_k, logit_k).
         self.readout_mu = nn.Sequential(
             nn.Linear(d_model * num_visible, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, 1),
+            nn.Linear(d_model, self.K),
         )
         self.readout_logsigma = nn.Sequential(
             nn.Linear(d_model * num_visible, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, 1),
+            nn.Linear(d_model, self.K),
         )
+        if self.K > 1:
+            self.readout_logits = nn.Sequential(
+                nn.Linear(d_model * num_visible, d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model, self.K),
+            )
+        else:
+            self.readout_logits = None
+
+    def _compute_coupling_weight(self, x: torch.Tensor) -> torch.Tensor:
+        """PCA 耦合权重: w_{t,j} = 集体成分² / 原 dx², ∈ [0, 1].
+
+        动机: w 大 = 这个 (t,j) 变化被群落 top-K PCs 解释 = 真事件;
+              w 小 = 孤立跳动, 大概率噪声.
+        x: (B, T, N) → w: (B, T, N)
+        """
+        with torch.no_grad():
+            B, T, N = x.shape
+            eps = 1e-6
+            safe = torch.clamp(x, min=eps)
+            dx = torch.log(safe[:, 1:] / safe[:, :-1])   # (B, T-1, N)
+            # 尾部复制最后一个时间点到 T 长度 (avoid shape mismatch)
+            dx_padded = torch.cat([dx, dx[:, -1:]], dim=1)  # (B, T, N)
+            # batch SVD
+            U, S, Vh = torch.linalg.svd(dx_padded, full_matrices=False)   # (B, T, r), (B, r), (B, r, N)
+            K = min(self.coupling_top_k, S.shape[-1])
+            S_k = S[..., :K]                                 # (B, K)
+            U_k = U[..., :K]                                 # (B, T, K)
+            Vh_k = Vh[..., :K, :]                             # (B, K, N)
+            dx_coll = U_k @ torch.diag_embed(S_k) @ Vh_k    # (B, T, N)
+            w = (dx_coll ** 2) / (dx_padded ** 2 + eps)
+            w = torch.clamp(w, min=0.0, max=1.0)
+        return w.detach()
 
     def _build_features(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -106,11 +163,17 @@ class PosteriorEncoder(nn.Module):
             padded_log = F.pad(log_x.permute(0, 2, 1), (lag, 0), value=0.0)[..., :T].permute(0, 2, 1)
             feats.append(padded_x.unsqueeze(-1))
             feats.append(padded_log.unsqueeze(-1))
+        if self.use_coupling_weight:
+            w = self._compute_coupling_weight(x)            # (B, T, N)
+            feats.append(w.unsqueeze(-1))
         return torch.cat(feats, dim=-1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, residual: torch.Tensor = None,
+                 species_ids: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode visible → posterior params.
         x: (B, T, N)
+        residual: optional (B, T, N), used if use_residual_attn=True
+        species_ids: optional (N,) long tensor of species IDs in [0, num_total_species) — used if use_species_id_emb
         Returns: μ (B, T), log_σ (B, T)
         """
         if x.dim() == 2:
@@ -118,31 +181,69 @@ class PosteriorEncoder(nn.Module):
         B, T, N = x.shape
 
         features = self._build_features(x)
-        h = self.input_proj(features) + self.species_emb.view(1, 1, N, -1)
+        if self.use_species_id_emb:
+            if species_ids is None:
+                species_ids = torch.arange(N, device=x.device)
+            assert species_ids.shape[0] == N, \
+                f"species_ids size {species_ids.shape[0]} != N={N}"
+            sp_emb = self.species_emb_table[species_ids]   # (N, d_model)
+        else:
+            sp_emb = self.species_emb                       # (N, d_model)
+        h = self.input_proj(features) + sp_emb.view(1, 1, N, -1)
         pe = sinusoidal_pe(T, self.d_model, h.device)
         h = h + pe.view(1, T, 1, self.d_model)
+
+        # Pre-compute attention biases. Priority: residual_attn > coupling_attn > none.
+        species_attn_mask = None
+        temporal_attn_mask = None
+        if self.use_residual_attn and residual is not None:
+            # |R| 作 bias 源: log|R|_{t,j}, 按每 species 归一化
+            R_mag = torch.abs(residual).clamp(min=1e-5)       # (B, T, N)
+            R_norm = R_mag / R_mag.mean(dim=1, keepdim=True).clamp(min=1e-5)
+            log_r = torch.log(R_norm.clamp(min=1e-4, max=100.0))   # (B, T, N)
+            sp_bias = log_r.reshape(B * T, N).unsqueeze(1).expand(B * T, N, N)
+            species_attn_mask = sp_bias.repeat_interleave(self.num_heads, dim=0).contiguous()
+            log_r_bnt = log_r.permute(0, 2, 1).reshape(B * N, T)
+            tp_bias = log_r_bnt.unsqueeze(1).expand(B * N, T, T)
+            temporal_attn_mask = tp_bias.repeat_interleave(self.num_heads, dim=0).contiguous()
+        elif self.use_coupling_attn:
+            w = self._compute_coupling_weight(x)            # (B, T, N)
+            log_w = torch.log(torch.clamp(w, min=1e-4))      # (B, T, N), ∈ [-∞~-4, 0]
+            # Species attn mask: shape (B*T*num_heads, N, N)
+            # bias[query i, key j] = log_w[b, t, j]
+            sp_bias = log_w.reshape(B * T, N).unsqueeze(1).expand(B * T, N, N)
+            species_attn_mask = sp_bias.repeat_interleave(self.num_heads, dim=0).contiguous()
+            # Temporal attn mask: shape (B*N*num_heads, T, T)
+            # bias[query t_q, key t_k] = log_w[b, t_k, n]
+            log_w_bnt = log_w.permute(0, 2, 1).reshape(B * N, T)   # (B*N, T)
+            tp_bias = log_w_bnt.unsqueeze(1).expand(B * N, T, T)
+            temporal_attn_mask = tp_bias.repeat_interleave(self.num_heads, dim=0).contiguous()
 
         for block in self.blocks:
             # Species attention (per time)
             B_, T_, N_, D = h.shape
             x_s = h.reshape(B_ * T_, N_, D)
-            a, _ = block["species_attn"](x_s, x_s, x_s)
+            a, _ = block["species_attn"](x_s, x_s, x_s, attn_mask=species_attn_mask)
             x_s = block["norm1"](x_s + a)
             h = x_s.reshape(B_, T_, N_, D)
             # Temporal attention
             x_t = h.permute(0, 2, 1, 3).contiguous().reshape(B_ * N_, T_, D)
-            a, _ = block["temporal_attn"](x_t, x_t, x_t)
+            a, _ = block["temporal_attn"](x_t, x_t, x_t, attn_mask=temporal_attn_mask)
             x_t = block["norm2"](x_t + a)
             h = x_t.reshape(B_, N_, T_, D).permute(0, 2, 1, 3).contiguous()
             h = block["norm3"](h + block["ffn"](h))
 
         # Flatten species dim and readout
         h_flat = h.reshape(B, T, N * self.d_model)
-        mu = self.readout_mu(h_flat).squeeze(-1)            # (B, T)
-        log_sigma = self.readout_logsigma(h_flat).squeeze(-1)
-        # Clamp log_sigma to avoid extreme values
-        log_sigma = torch.clamp(log_sigma, min=-3.0, max=1.0)
-        return mu, log_sigma
+        mu_K = self.readout_mu(h_flat)                     # (B, T, K)
+        log_sigma_K = self.readout_logsigma(h_flat)
+        log_sigma_K = torch.clamp(log_sigma_K, min=-3.0, max=1.0)
+        if self.K == 1:
+            # Backward-compat: return (B, T) 2-tuple
+            return mu_K.squeeze(-1), log_sigma_K.squeeze(-1)
+        # MoG path: return 3-tuple with logits per component
+        logits_K = self.readout_logits(h_flat)             # (B, T, K)
+        return mu_K, log_sigma_K, logits_K
 
     def sample(self, mu: torch.Tensor, log_sigma: torch.Tensor, n_samples: int = 1) -> torch.Tensor:
         """Sample h from posterior.

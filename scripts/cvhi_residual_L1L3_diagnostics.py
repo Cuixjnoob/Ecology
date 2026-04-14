@@ -242,8 +242,17 @@ def hidden_true_substitution(model, visible, hidden_true, device="cpu"):
     h_true = torch.tensor(hidden_true, dtype=torch.float32, device=device).unsqueeze(0)
     h_true_centered = h_true - h_true.mean()
     with torch.no_grad():
-        mu_k, _ = model.encoder(x)
-        encoder_h = mu_k[..., 0]
+        enc_out = model.encoder(x)
+        if len(enc_out) == 2:
+            mu_k, _ = enc_out
+            encoder_h = mu_k[..., 0]                        # (B, T)
+        else:
+            # MoG: (mu, log_sigma, logits) each (B, T, K, 1)
+            mu_K, _, logits_K = enc_out
+            mu_K = mu_K[..., 0]                              # (B, T, K)
+            logits_K = logits_K[..., 0]
+            pi = F.softmax(logits_K, dim=-1)                  # (B, T, K)
+            encoder_h = (pi * mu_K).sum(-1)                  # (B, T) π-weighted
         encoder_h_centered = encoder_h - encoder_h.mean()
         encoder_std = encoder_h_centered.std()
         h_true_scaled = h_true_centered * (encoder_std / (h_true_centered.std() + 1e-6))

@@ -1,7 +1,7 @@
-.pycache/
+﻿.pycache/
 __pycache__/
 .venv/
 *.pt
-!runs/
-!runs/**
+runs/
 .DS_Store
+data/real_datasets/calcofi/calcofi_78_bottle.csv

@@ -59,22 +59,72 @@ class CVHI_Residual(nn.Module):
         clamp_max: float = 2.5,
         # backbone: "softforms" (5 preset forms) or "mlp" (pure MLP messages, no presets)
         gnn_backbone: str = "softforms",
+        # ablation flags
+        use_formula_hints: bool = True,   # 控制 MLP backbone 是否使用 formula hints 输入
+        use_G_field: bool = True,         # 控制残差分解是否使用 G(x) 敏感度场 (False: h 直接均匀加, 不学 G)
+        # event-focused loss reweighting (Exp1, 2026-04-14)
+        use_event_weighting: bool = False,  # 打开后 recon loss 每个 t 乘上 w_t ∝ ||Δlog x_t||^α
+        event_alpha: float = 1.0,           # α 越大越强调事件时刻 (0 = 均匀)
+        # MoG posterior (Exp2, 2026-04-14)
+        num_mixture_components: int = 1,    # K 个高斯分量 (K=1 等价原版); 通过 Gumbel-softmax 采样
+        gumbel_tau: float = 1.0,            # Gumbel-softmax 温度
+        # Path A: G(x) ≥ 0 约束, 破 ±h 对称 (2026-04-14)
+        G_positive: bool = False,           # True: 用 softplus 强制 *全部* G ≥ 0, 消除 sign ambiguity
+        # Path A'': 只 pin 一个物种 (idx=0) 的 G ≥ 0, 其它自由  — 更温和破对称
+        G_anchor_first: bool = False,
+        # Path A''': sign convention of anchored species. +1: pin ≥ 0, -1: pin ≤ 0.
+        # 配合 "双向训练 + val 选方向" 消除 convention 偏见.
+        G_anchor_sign: int = +1,
+        # Option 3: encoder 的 PCA 耦合权重 (per-(t,j) dynamic attention feature)
+        use_coupling_weight: bool = False,
+        coupling_top_k: int = 3,
+        # Option 3 B+C: 用 log(w) 作为 attention bias (species & temporal)
+        use_coupling_attn: bool = False,
+        # Part B: residual-driven attention (R = Δlog x - f_visible(x))
+        use_residual_attn: bool = False,
+        # Path B multi-hidden: 总 species 数 (encoder 用 ID 索引)
+        num_total_species: int = None,
     ):
         super().__init__()
         self.num_visible = num_visible
         self.prior_std = prior_std
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
+        self.use_event_weighting = use_event_weighting
+        self.event_alpha = event_alpha
+        self.K = num_mixture_components
+        self.gumbel_tau = gumbel_tau
+        self.G_positive = G_positive
+        self.G_anchor_first = G_anchor_first
+        self.G_anchor_sign = int(G_anchor_sign)
+        assert self.G_anchor_sign in (-1, +1), f"G_anchor_sign must be ±1, got {G_anchor_sign}"
+        # annealing schedule: 1.0 = hard softplus (原 G_anchor_first), 0.0 = identity (无约束).
+        # 训练循环通过 model.G_anchor_alpha = ... 逐 epoch 更新
+        self.G_anchor_alpha = 1.0
 
-        # Encoder (GNN + Takens, k=1 scalar hidden)
+        self.use_residual_attn = use_residual_attn
+
+        # Encoder (GNN + Takens, k=1 scalar hidden, K 个分量)
         self.encoder = MultiChannelPosteriorEncoder(
             k_hidden=1, num_visible=num_visible,
             takens_lags=list(takens_lags),
             d_model=encoder_d, num_heads=encoder_heads,
             num_blocks=encoder_blocks, dropout=encoder_dropout,
+            num_mixture_components=num_mixture_components,
+            use_coupling_weight=use_coupling_weight,
+            coupling_top_k=coupling_top_k,
+            use_coupling_attn=use_coupling_attn,
+            use_residual_attn=use_residual_attn,
+            num_total_species=num_total_species,
         )
 
         self.gnn_backbone = gnn_backbone
+        self.use_G_field = use_G_field
+
+        # ablation: formula hints 仅对 mlp backbone 生效
+        extra_kw = {}
+        if gnn_backbone == "mlp":
+            extra_kw["use_formula_hints"] = use_formula_hints
 
         # f_visible: visible-only dynamics baseline (no h input)
         self.f_visible = MultiLayerSpeciesGNN(
@@ -83,16 +133,21 @@ class CVHI_Residual(nn.Module):
             num_visible=num_visible, num_hidden=0,
             d_species=d_species_f, top_k=f_visible_top_k,
             use_free_nn=f_visible_use_free_nn,
+            **extra_kw,
         )
 
-        # G: visible-only, outputs per-species h sensitivity
-        self.G_field = MultiLayerSpeciesGNN(
-            num_layers=G_field_layers,
-            backbone=gnn_backbone,
-            num_visible=num_visible, num_hidden=0,
-            d_species=d_species_G, top_k=G_field_top_k,
-            use_free_nn=G_field_use_free_nn,
-        )
+        # G: visible-only, outputs per-species h sensitivity (仅在 use_G_field=True 时构建)
+        if use_G_field:
+            self.G_field = MultiLayerSpeciesGNN(
+                num_layers=G_field_layers,
+                backbone=gnn_backbone,
+                num_visible=num_visible, num_hidden=0,
+                d_species=d_species_G, top_k=G_field_top_k,
+                use_free_nn=G_field_use_free_nn,
+                **extra_kw,
+            )
+        else:
+            self.G_field = None
 
     def compute_f_visible(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, T, N) → log_ratio (B, T, N)."""
@@ -100,8 +155,31 @@ class CVHI_Residual(nn.Module):
         return pred
 
     def compute_G(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, T, N) → G (B, T, N) per-species h sensitivity."""
+        """x: (B, T, N) → G (B, T, N) per-species h sensitivity.
+
+        Ablation: 当 use_G_field=False 时, 返回 ones (h 均匀加到所有物种, 无敏感度差异).
+        Path A: 当 G_positive=True 时, 对 *全部* G 输出做 softplus, 保证 G ≥ 0.
+        Path A'': 当 G_anchor_first=True 时, **只** 对 G[..., 0] 做 softplus (pin 参考物种),
+          其它物种 G 完全自由 — 仅破 sign 对称, 保留表达力.
+        """
+        if not self.use_G_field:
+            return torch.ones(x.shape[0], x.shape[1], x.shape[2], device=x.device)
         G, _ = self.G_field(x, temporal_feat=None)
+        if self.G_positive:
+            G = F.softplus(G)
+        elif self.G_anchor_first:
+            # 软约束插值: alpha*(sign·softplus) + (1-alpha)*identity
+            raw_anchor = G[..., :1]
+            alpha = float(self.G_anchor_alpha)
+            sign = float(self.G_anchor_sign)
+            if alpha >= 1.0:
+                G_anchor = sign * F.softplus(raw_anchor)
+            elif alpha <= 0.0:
+                G_anchor = raw_anchor
+            else:
+                G_anchor = alpha * (sign * F.softplus(raw_anchor)) + (1 - alpha) * raw_anchor
+            G_rest = G[..., 1:]
+            G = torch.cat([G_anchor, G_rest], dim=-1)
         return G
 
     def forward_rollout(self, visible: torch.Tensor, mu: torch.Tensor,
@@ -165,20 +243,56 @@ class CVHI_Residual(nn.Module):
         return h_lp.reshape(orig_shape)
 
     def forward(self, visible: torch.Tensor, n_samples: int = 1,
-                 rollout_K: int = 0) -> Dict[str, torch.Tensor]:
+                 rollout_K: int = 0, species_ids: torch.Tensor = None) -> Dict[str, torch.Tensor]:
         if visible.dim() == 2:
             visible = visible.unsqueeze(0)
         B, T, N = visible.shape
 
-        # Encoder → (mu, log_sigma) for k=1 scalar hidden
-        mu_k, log_sigma_k = self.encoder(visible)  # (B, T, 1)
-        mu = mu_k[..., 0]        # (B, T)
-        log_sigma = log_sigma_k[..., 0]  # (B, T)
+        # Compute residual R = Δlog x - f_visible(x) if needed for attention
+        residual = None
+        if self.use_residual_attn:
+            with torch.no_grad():
+                base_for_R = self.compute_f_visible(visible).detach()  # (B, T, N)
+                safe = torch.clamp(visible, min=1e-6)
+                dx = torch.log(safe[:, 1:] / safe[:, :-1])   # (B, T-1, N)
+                dx_pad = torch.cat([dx, dx[:, -1:]], dim=1)   # (B, T, N)
+                residual = (dx_pad - base_for_R).detach()     # (B, T, N)
 
-        # Sample h
-        sigma = log_sigma.exp()
-        eps = torch.randn(n_samples, B, T, device=visible.device)
-        h_samples = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps  # (S, B, T)
+        logits = None   # set below when K>1
+        if self.K == 1:
+            # Encoder → (mu, log_sigma) for k=1 scalar hidden
+            mu_k, log_sigma_k = self.encoder(visible, residual=residual, species_ids=species_ids)
+            mu = mu_k[..., 0]        # (B, T)
+            log_sigma = log_sigma_k[..., 0]  # (B, T)
+
+            # Sample h (single Gaussian)
+            sigma = log_sigma.exp()
+            eps = torch.randn(n_samples, B, T, device=visible.device)
+            h_samples = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps  # (S, B, T)
+        else:
+            # MoG posterior: encoder returns (mu, log_sigma, logits) each (B, T, K, 1)
+            mu_k, log_sigma_k, logits_k = self.encoder(visible, residual=residual, species_ids=species_ids)
+            mu = mu_k[..., 0]            # (B, T, K)
+            log_sigma = log_sigma_k[..., 0]
+            logits = logits_k[..., 0]    # (B, T, K)
+            sigma = log_sigma.exp()
+
+            # Gumbel-softmax straight-through, per-sample per (b, t):
+            #   sample y (n_samples, B, T, K), one-hot in forward, soft gradient
+            S = n_samples
+            gumbel = -torch.log(-torch.log(
+                torch.rand(S, B, T, self.K, device=visible.device) + 1e-20) + 1e-20)
+            logits_exp = logits.unsqueeze(0).expand(S, B, T, self.K)
+            y_soft = F.softmax((logits_exp + gumbel) / self.gumbel_tau, dim=-1)
+            # straight-through: hard onehot forward, soft gradient backward
+            idx = y_soft.argmax(dim=-1, keepdim=True)
+            y_hard = torch.zeros_like(y_soft).scatter_(-1, idx, 1.0)
+            y = (y_hard - y_soft).detach() + y_soft                    # (S, B, T, K)
+
+            # Gaussian reparameterize per-component, then pick by y
+            eps = torch.randn(S, B, T, self.K, device=visible.device)
+            z_comp = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps        # (S, B, T, K)
+            h_samples = (z_comp * y).sum(-1)                            # (S, B, T)
 
         # f_visible and G (shared across samples, visible only)
         base = self.compute_f_visible(visible)  # (B, T, N)
@@ -217,11 +331,20 @@ class CVHI_Residual(nn.Module):
             "G": G,
             "base": base,
         }
+        if logits is not None:
+            out["logits"] = logits   # (B, T, K) MoG mixture logits
+
+        # For rollout we need a scalar mu per (b, t). With K>1 pick π-weighted mean.
+        if self.K == 1:
+            mu_for_rollout = mu
+        else:
+            pi = F.softmax(logits, dim=-1)                          # (B, T, K)
+            mu_for_rollout = (pi * mu).sum(-1)                      # (B, T)
 
         # L1: rollout (deterministic, uses mu only)
         if rollout_K > 0 and T > rollout_K + 1:
             rollout_log_states, target_log_states = self.forward_rollout(
-                visible, mu, K=rollout_K
+                visible, mu_for_rollout, K=rollout_K
             )
             out["rollout_log_states"] = rollout_log_states
             out["target_log_states"] = target_log_states
@@ -249,6 +372,8 @@ class CVHI_Residual(nn.Module):
         # L3: low-frequency prior
         lam_hf: float = 0.5,
         lowpass_sigma: float = 6.0,
+        # MoG entropy regularizer on π (only active when K>1)
+        lam_entropy: float = 0.1,
     ) -> Dict[str, torch.Tensor]:
         mu = out["mu"]
         log_sigma = out["log_sigma"]
@@ -257,11 +382,29 @@ class CVHI_Residual(nn.Module):
         pred_shuf = out["pred_shuf"]
         actual = out["actual"]
         h_samples = out["h_samples"]
+        logits = out.get("logits", None)   # (B, T, K) when K>1, else None
 
-        # Reconstructions
-        recon_full = F.mse_loss(pred_full, actual.unsqueeze(0).expand_as(pred_full))
-        recon_null = F.mse_loss(pred_null, actual)
-        recon_shuf = F.mse_loss(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
+        # Reconstructions — optionally reweight per timestep by event magnitude
+        if self.use_event_weighting:
+            # Event salience: L2 norm of actual log-ratio per (b, t) -> (B, T_slice)
+            with torch.no_grad():
+                mag = actual.pow(2).sum(-1).sqrt()            # (B, T)
+                w = (mag + 1e-6) ** self.event_alpha
+                w = w / w.mean(dim=-1, keepdim=True).clamp(min=1e-8)   # mean=1 per batch
+                w = w.detach()
+            # weighted MSE helpers
+            def _weighted_mse(pred, tgt):
+                # pred: (..., T, N);  tgt: (..., T, N);  w: (B, T)
+                sq = (pred - tgt) ** 2                         # (..., T, N)
+                per_t = sq.mean(dim=-1)                         # (..., T)
+                return (per_t * w).mean()
+            recon_full = _weighted_mse(pred_full, actual.unsqueeze(0).expand_as(pred_full))
+            recon_null = _weighted_mse(pred_null, actual)
+            recon_shuf = _weighted_mse(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
+        else:
+            recon_full = F.mse_loss(pred_full, actual.unsqueeze(0).expand_as(pred_full))
+            recon_null = F.mse_loss(pred_null, actual)
+            recon_shuf = F.mse_loss(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
 
         # During warmup (h_weight<1): blend recon_null (pure f_visible) with recon_full
         recon_loss = h_weight * recon_full + (1.0 - h_weight) * recon_null
@@ -274,14 +417,47 @@ class CVHI_Residual(nn.Module):
         loss_necessary = F.relu(margin_null - margin_null_obs)
         loss_shuffle = F.relu(margin_shuf - margin_shuf_obs)
 
-        # KL to prior N(0, σ_prior²) -- encoder's mu/log_sigma regularization
+        # KL to prior N(0, σ_prior²)
         prior_var = self.prior_std ** 2
-        sigma_sq = torch.exp(2 * log_sigma)
-        kl_per_step = 0.5 * (
-            torch.log(torch.tensor(prior_var, device=mu.device)) - 2 * log_sigma
-            + (sigma_sq + mu ** 2) / prior_var - 1
-        )
-        kl = torch.clamp(kl_per_step - free_bits, min=0).mean()
+        if logits is None:
+            # 原版解析 KL (K=1)
+            sigma_sq = torch.exp(2 * log_sigma)
+            kl_per_step = 0.5 * (
+                torch.log(torch.tensor(prior_var, device=mu.device)) - 2 * log_sigma
+                + (sigma_sq + mu ** 2) / prior_var - 1
+            )
+            kl = torch.clamp(kl_per_step - free_bits, min=0).mean()
+            loss_entropy_reg = torch.tensor(0.0, device=mu.device)
+            pi_entropy = torch.tensor(0.0, device=mu.device)
+        else:
+            # MoG MC KL: 对每个 h_samples s, 计算 log q(h|x) - log p(h) 再平均
+            # q(h|x) = Σ_k π_k N(h; μ_k, σ_k²)
+            sigma = log_sigma.exp()                                 # (B, T, K)
+            log_pi = F.log_softmax(logits, dim=-1)                   # (B, T, K)
+            # h_samples (S, B, T); broadcast across K
+            h = h_samples.unsqueeze(-1)                              # (S, B, T, 1)
+            mu_b    = mu.unsqueeze(0)                                # (1, B, T, K)
+            ls_b    = log_sigma.unsqueeze(0)                         # (1, B, T, K)
+            sig_b   = sigma.unsqueeze(0)                             # (1, B, T, K)
+            # log N(h; μ_k, σ_k²)  (S, B, T, K)
+            log_N_k = -0.5 * (
+                torch.log(torch.tensor(2 * torch.pi, device=mu.device))
+                + 2 * ls_b + ((h - mu_b) / sig_b) ** 2
+            )
+            log_q = torch.logsumexp(log_pi.unsqueeze(0) + log_N_k, dim=-1)   # (S, B, T)
+            # log p(h) = log N(h; 0, σ_prior²)
+            log_p = -0.5 * (
+                torch.log(torch.tensor(2 * torch.pi * prior_var, device=mu.device))
+                + h_samples ** 2 / prior_var
+            )                                                        # (S, B, T)
+            kl_per_step_sample = log_q - log_p                       # (S, B, T)
+            # 等效的 per-step KL 估计: 在样本维度做平均先
+            kl_per_step = kl_per_step_sample.mean(dim=0)             # (B, T)
+            kl = torch.clamp(kl_per_step - free_bits, min=0).mean()
+            # Entropy reg on π (反 collapse): 最大化 H(π) → 减 loss
+            pi = log_pi.exp()
+            pi_entropy = -(pi * log_pi).sum(-1).mean()               # scalar
+            loss_entropy_reg = -pi_entropy                            # 负的, 乘 lam_entropy 做减
 
         # Energy: prevent h collapse to constant (must have variance over time)
         h_var = h_samples.var(dim=-1).mean()  # mean across samples, batches
@@ -291,9 +467,10 @@ class CVHI_Residual(nn.Module):
         dh = h_samples[:, :, 2:] - 2 * h_samples[:, :, 1:-1] + h_samples[:, :, :-2]
         loss_smooth = (dh ** 2).mean()
 
-        # Sparsity on dynamics gates/coefs
-        loss_sparse = (self.f_visible.l1_gates() + self.f_visible.l1_coefs()
-                       + self.G_field.l1_gates() + self.G_field.l1_coefs())
+        # Sparsity on dynamics gates/coefs (G_field 可能被 ablation 关掉)
+        loss_sparse = self.f_visible.l1_gates() + self.f_visible.l1_coefs()
+        if self.G_field is not None:
+            loss_sparse = loss_sparse + self.G_field.l1_gates() + self.G_field.l1_coefs()
 
         # L1: Multi-step rollout (if forward was called with rollout_K > 0)
         if "rollout_log_states" in out:
@@ -329,7 +506,8 @@ class CVHI_Residual(nn.Module):
                  + lam_smooth * loss_smooth
                  + lam_sparse * loss_sparse
                  + h_weight * lam_rollout * loss_rollout   # L1
-                 + h_weight * lam_hf * loss_hf)             # L3
+                 + h_weight * lam_hf * loss_hf              # L3
+                 + lam_entropy * loss_entropy_reg)           # MoG anti-collapse
 
         return {
             "total": total,
@@ -351,6 +529,8 @@ class CVHI_Residual(nn.Module):
             "rollout_per_step": step_mse.detach() if step_mse is not None else None,
             "hf": loss_hf.detach(),
             "hf_frac": hf_frac.detach(),
+            # MoG diagnostics
+            "pi_entropy": pi_entropy.detach() if torch.is_tensor(pi_entropy) else torch.tensor(0.0),
         }
 
     def slice_out(self, out: Dict[str, torch.Tensor], t_start: int, t_end: int) -> Dict[str, torch.Tensor]:
@@ -368,6 +548,8 @@ class CVHI_Residual(nn.Module):
             "G": out["G"],
             "base": out["base"],
         }
+        if "logits" in out:
+            sliced["logits"] = out["logits"][:, t_start:t_end]
         # Slice rollout fields if present (num_starts is T-K, slice to train segment)
         if "rollout_log_states" in out:
             rls = out["rollout_log_states"]  # (B, T-K, K, N)
