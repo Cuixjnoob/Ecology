@@ -2,6 +2,5 @@
 __pycache__/
 .venv/
 *.pt
-runs/
 .DS_Store
 data/real_datasets/calcofi/calcofi_78_bottle.csv
