@@ -1,6 +1,17 @@
-﻿.pycache/
+.pycache/
 __pycache__/
 .venv/
 *.pt
 .DS_Store
 data/real_datasets/calcofi/calcofi_78_bottle.csv
+
+# Large files - PDFs, logs, experiment runs
+docs/**/*.pdf
+logs/
+runs/*/
+!runs/huisman1999_chaos/
+
+# System
+*.pyc
+.env
+*.egg-info/

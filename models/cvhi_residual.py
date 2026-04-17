@@ -1,21 +1,28 @@
-"""CVHI-Residual: 强制残差分解 + 反事实必要性, 纯无监督 (无 anchor, 无 hidden 标签).
+"""Eco-GNRD (Ecological Graph Neural Residual Dynamics).
 
-架构:
-  log(x_{t+1}/x_t) = f_visible(x_t) + h_t * G(x_t)
-    - f_visible: Species-GNN SoftForms (num_hidden=0, 纯 visible 动力学)
-    - G:         Species-GNN SoftForms (num_hidden=0, 输出 per-species "h 敏感度场")
-    - h * G:     逐元素, 保证 h=0 时 h 分支恒为 0 (硬约束, 消除 architect-away)
+A fully unsupervised framework for inferring the dynamical influence of
+unobserved species in partially-observed ecological communities.
 
-训练 (纯无监督, 无 anchor):
-  L = MSE(pred_full, actual)
-    + β · KL[q(h|x) || N(0, σ_prior²)]
-    + λ_nec  · ReLU(m_null - (MSE_null - MSE_full))   # h 必要 (无 h 时预测必须变差)
-    + λ_shuf · ReLU(m_shuf - (MSE_shuf - MSE_full))   # h 时序结构 (打乱时必须变差)
-    + λ_energy · ReLU(min_energy - var(h))            # 防 h 塌陷成常数
-    + λ_smooth · ||Δ²h||²                              # h 平滑
-    + λ_sparse · (L1_gates + L1_coefs)                # 稀疏化
+Architecture:
+  log(x_{t+1}/x_t)_i = f_visible_i(x_t) + h(t) * G_i(x_t)
 
-红线: 训练中绝不碰 hidden_true. 只在最终 eval 时用.
+  - f_visible: Species-GNN modeling observable community dynamics
+  - G:         Species-GNN outputting per-species sensitivity to hidden influence
+  - h(t):     Scalar latent variable representing the hidden species' effect
+  - h * G:    Element-wise product ensuring zero contribution when h=0
+
+Training objective (strictly unsupervised -- hidden_true never used):
+  L = MSE(pred_full, actual)                              # visible reconstruction
+    + beta * KL[q(h|x) || N(0, sigma_prior^2)]            # posterior regularization
+    + lam_nec  * ReLU(m_null - (MSE_null - MSE_full))     # counterfactual necessity
+    + lam_shuf * ReLU(m_shuf - (MSE_shuf - MSE_full))     # temporal structure
+    + lam_energy * ReLU(min_energy - var(h))               # anti-collapse
+    + lam_smooth * ||d^2 h / dt^2||^2                     # smoothness
+    + lam_sparse * (L1_gates + L1_coefs)                   # interaction sparsity
+
+Reference:
+  "Inferring Unobserved Species Influence in Chaotic Ecological
+   Dynamics: A Data-Driven Unsupervised Approach"
 """
 from __future__ import annotations
 
@@ -28,10 +35,14 @@ import torch.nn.functional as F
 from models.cvhi_ncd import MultiLayerSpeciesGNN, MultiChannelPosteriorEncoder
 
 
-class CVHI_Residual(nn.Module):
-    """CVHI with forced residual decomposition + counterfactual necessity.
+class EcoGNRD(nn.Module):
+    """Eco-GNRD: Graph Neural Residual Dynamics for hidden species inference.
 
-    n→1 任务 (k_hidden=1 固定).
+    Decomposes ecological dynamics into an observable baseline f_visible(x)
+    and a latent residual closure h(t)*G(x), where h(t) is inferred by a
+    variational encoder without any supervision from the hidden species.
+
+    Designed for the n-to-1 partial observation setting (single hidden species).
     """
 
     def __init__(
@@ -84,12 +95,17 @@ class CVHI_Residual(nn.Module):
         use_residual_attn: bool = False,
         # Path B multi-hidden: 总 species 数 (encoder 用 ID 索引)
         num_total_species: int = None,
+        # Hierarchical h: 2 个 channel (slow + fast) 求和作最终 h
+        hierarchical_h: bool = False,
+        # Point estimate mode: encoder outputs h directly, no sampling, no KL
+        point_estimate: bool = False,
     ):
         super().__init__()
         self.num_visible = num_visible
         self.prior_std = prior_std
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
+        self.point_estimate = point_estimate
         self.use_event_weighting = use_event_weighting
         self.event_alpha = event_alpha
         self.K = num_mixture_components
@@ -103,10 +119,12 @@ class CVHI_Residual(nn.Module):
         self.G_anchor_alpha = 1.0
 
         self.use_residual_attn = use_residual_attn
+        self.hierarchical_h = hierarchical_h
 
-        # Encoder (GNN + Takens, k=1 scalar hidden, K 个分量)
+        # Encoder: k_hidden=2 if hierarchical (one slow + one fast channel)
+        k_hidden = 2 if hierarchical_h else 1
         self.encoder = MultiChannelPosteriorEncoder(
-            k_hidden=1, num_visible=num_visible,
+            k_hidden=k_hidden, num_visible=num_visible,
             takens_lags=list(takens_lags),
             d_model=encoder_d, num_heads=encoder_heads,
             num_blocks=encoder_blocks, dropout=encoder_dropout,
@@ -260,15 +278,50 @@ class CVHI_Residual(nn.Module):
 
         logits = None   # set below when K>1
         if self.K == 1:
-            # Encoder → (mu, log_sigma) for k=1 scalar hidden
+            # Encoder → (mu, log_sigma) for k_hidden=1 or 2
             mu_k, log_sigma_k = self.encoder(visible, residual=residual, species_ids=species_ids)
-            mu = mu_k[..., 0]        # (B, T)
-            log_sigma = log_sigma_k[..., 0]  # (B, T)
+            # mu_k shape: (B, T, k_hidden)
 
-            # Sample h (single Gaussian)
-            sigma = log_sigma.exp()
-            eps = torch.randn(n_samples, B, T, device=visible.device)
-            h_samples = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps  # (S, B, T)
+            if self.hierarchical_h:
+                # k_hidden=2: channel 0 = slow, channel 1 = fast
+                mu_slow = mu_k[..., 0]           # (B, T)
+                mu_fast = mu_k[..., 1]
+                log_sigma_slow = log_sigma_k[..., 0]
+                log_sigma_fast = log_sigma_k[..., 1]
+
+                sigma_slow = log_sigma_slow.exp()
+                sigma_fast = log_sigma_fast.exp()
+
+                # Independent samples per channel
+                eps1 = torch.randn(n_samples, B, T, device=visible.device)
+                eps2 = torch.randn(n_samples, B, T, device=visible.device)
+                h_slow = mu_slow.unsqueeze(0) + sigma_slow.unsqueeze(0) * eps1
+                h_fast = mu_fast.unsqueeze(0) + sigma_fast.unsqueeze(0) * eps2
+
+                # Sum = final h
+                h_samples = h_slow + h_fast    # (S, B, T)
+
+                # For loss: expose combined mu, log_sigma (use sum mu, combined variance)
+                mu = mu_slow + mu_fast          # (B, T)
+                # Combined log_sigma (independent Gaussians sum → variance adds)
+                sigma_combined_sq = sigma_slow**2 + sigma_fast**2
+                log_sigma = 0.5 * torch.log(sigma_combined_sq + 1e-10)
+                # Keep per-channel for separate smooth prior
+                _mu_slow, _mu_fast = mu_slow, mu_fast
+            else:
+                mu = mu_k[..., 0]        # (B, T)
+                log_sigma = log_sigma_k[..., 0]  # (B, T)
+                _mu_slow, _mu_fast = None, None
+
+                if self.point_estimate:
+                    # Point estimate: h = mu directly, no sampling noise
+                    h_samples = mu.unsqueeze(0).expand(n_samples, B, T)  # (S, B, T)
+                    log_sigma = torch.zeros_like(log_sigma)  # dummy for loss compatibility
+                else:
+                    # Sample h (single Gaussian)
+                    sigma = log_sigma.exp()
+                    eps = torch.randn(n_samples, B, T, device=visible.device)
+                    h_samples = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps  # (S, B, T)
         else:
             # MoG posterior: encoder returns (mu, log_sigma, logits) each (B, T, K, 1)
             mu_k, log_sigma_k, logits_k = self.encoder(visible, residual=residual, species_ids=species_ids)
@@ -330,7 +383,12 @@ class CVHI_Residual(nn.Module):
             "actual": actual,
             "G": G,
             "base": base,
+            "visible": visible,      # Stage 1: 给 loss 算 log(x) 重构
         }
+        # Hierarchical mu slow/fast for separate smoothness priors
+        if self.hierarchical_h and _mu_slow is not None:
+            out["mu_slow"] = _mu_slow
+            out["mu_fast"] = _mu_fast
         if logits is not None:
             out["logits"] = logits   # (B, T, K) MoG mixture logits
 
@@ -374,6 +432,22 @@ class CVHI_Residual(nn.Module):
         lowpass_sigma: float = 6.0,
         # MoG entropy regularizer on π (only active when K>1)
         lam_entropy: float = 0.1,
+        # Stage 1 (2026-04-14): ecology priors
+        lam_rmse_log: float = 0.0,         # log(x) 重构损失 (amplitude 感知)
+        lam_mte_prior: float = 0.0,        # [DEPRECATED] MTE-based G magnitude prior (wrong target)
+        mte_prior_target: torch.Tensor = None,  # (N,) target |G| magnitudes from body mass
+        # Stage 1c (2026-04-15): corrected MTE — shape-only prior on f_visible intrinsic rate
+        lam_mte_shape: float = 0.0,        # soft correlation prior, only shape not absolute
+        mte_target_log_r: torch.Tensor = None,   # (N,) target log intrinsic rate ~ (b-1)*log10(M)
+        # Stage 2 (2026-04-15): Klausmeier stoichiometric sign priors
+        lam_stoich_sign: float = 0.0,
+        # Robust recon: Huber loss for bursty data (Beninca etc.)
+        use_huber_recon: bool = False,
+        huber_delta: float = 0.1,
+        # Nutrients-as-input: only compute recon loss on first n channels (species)
+        n_recon_channels: int = None,   # None = all channels
+        stoich_pos_pairs: tuple = (),  # list of (i_target, j_source) where d base_i / d x_j should be > 0
+        stoich_neg_pairs: tuple = (),  # d base_i / d x_j should be < 0
     ) -> Dict[str, torch.Tensor]:
         mu = out["mu"]
         log_sigma = out["log_sigma"]
@@ -383,6 +457,14 @@ class CVHI_Residual(nn.Module):
         actual = out["actual"]
         h_samples = out["h_samples"]
         logits = out.get("logits", None)   # (B, T, K) when K>1, else None
+
+        # Nutrients-as-input: slice to species-only channels for recon loss
+        nc = n_recon_channels
+        if nc is not None and nc < actual.shape[-1]:
+            pred_full = pred_full[..., :nc]
+            pred_null = pred_null[..., :nc]
+            pred_shuf = pred_shuf[..., :nc]
+            actual = actual[..., :nc]
 
         # Reconstructions — optionally reweight per timestep by event magnitude
         if self.use_event_weighting:
@@ -402,9 +484,16 @@ class CVHI_Residual(nn.Module):
             recon_null = _weighted_mse(pred_null, actual)
             recon_shuf = _weighted_mse(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
         else:
-            recon_full = F.mse_loss(pred_full, actual.unsqueeze(0).expand_as(pred_full))
-            recon_null = F.mse_loss(pred_null, actual)
-            recon_shuf = F.mse_loss(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
+            if use_huber_recon:
+                recon_full = F.huber_loss(pred_full, actual.unsqueeze(0).expand_as(pred_full),
+                                            delta=huber_delta)
+                recon_null = F.huber_loss(pred_null, actual, delta=huber_delta)
+                recon_shuf = F.huber_loss(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf),
+                                            delta=huber_delta)
+            else:
+                recon_full = F.mse_loss(pred_full, actual.unsqueeze(0).expand_as(pred_full))
+                recon_null = F.mse_loss(pred_null, actual)
+                recon_shuf = F.mse_loss(pred_shuf, actual.unsqueeze(0).expand_as(pred_shuf))
 
         # During warmup (h_weight<1): blend recon_null (pure f_visible) with recon_full
         recon_loss = h_weight * recon_full + (1.0 - h_weight) * recon_null
@@ -476,6 +565,9 @@ class CVHI_Residual(nn.Module):
         if "rollout_log_states" in out:
             rls = out["rollout_log_states"]   # (B, num_starts, K, N)
             tls = out["target_log_states"]
+            if nc is not None and nc < rls.shape[-1]:
+                rls = rls[..., :nc]
+                tls = tls[..., :nc]
             K_out = rls.shape[-2]
             # per-step MSE
             step_mse = ((rls - tls) ** 2).mean(dim=(0, 1, 3))  # (K,)
@@ -498,6 +590,102 @@ class CVHI_Residual(nn.Module):
             total_var = h_samples.var(dim=-1).mean() + 1e-8
             hf_frac = hf_var / total_var
 
+        # Stage 1: log(x) reconstruction (amplitude-aware)
+        if lam_rmse_log > 0.0 and "visible" in out:
+            vis = out["visible"]                                 # (B, T, N_all)
+            if nc is not None and nc < vis.shape[-1]:
+                vis = vis[..., :nc]
+            safe_vis = torch.clamp(vis, min=1e-6)
+            log_x_actual = torch.log(safe_vis)[:, 1:, :]         # (B, T-1, N)
+            # pred log(x_{t+1}) = log(x_t) + Δlog_pred = log(x_t) + pred_full[s,b,t,n]
+            log_x_prev = torch.log(safe_vis)[:, :-1, :]          # (B, T-1, N)
+            pred_log_x = log_x_prev.unsqueeze(0) + pred_full     # (S, B, T-1, N)
+            loss_rmse_log = ((pred_log_x - log_x_actual.unsqueeze(0)) ** 2).mean()
+        else:
+            loss_rmse_log = torch.tensor(0.0, device=mu.device)
+
+        # Hierarchical h: 额外 smoothness 给 slow channel
+        loss_hier_smooth = torch.tensor(0.0, device=mu.device)
+        if "mu_slow" in out and "mu_fast" in out:
+            mu_slow = out["mu_slow"]
+            mu_fast = out["mu_fast"]
+            # Slow channel: 强 smoothness (second-order diff)
+            d2_slow = mu_slow[:, 2:] - 2 * mu_slow[:, 1:-1] + mu_slow[:, :-2]
+            loss_hier_smooth = (d2_slow ** 2).mean()
+            # Fast channel: 弱 smoothness (放任高频)
+            # 可选: 也可以加 ||mu_fast||² 让 fast 小
+
+        # Stage 1: MTE-based G magnitude prior [DEPRECATED — applied to wrong target]
+        if lam_mte_prior > 0.0 and mte_prior_target is not None and "G" in out:
+            G_field = out["G"]                                   # (B, T, N)
+            G_mag = G_field.abs().mean(dim=(0, 1))               # (N,)
+            G_mag_norm = G_mag / (G_mag.sum() + 1e-8)
+            mte_norm = mte_prior_target / (mte_prior_target.sum() + 1e-8)
+            loss_mte = ((G_mag_norm - mte_norm) ** 2).sum()
+        else:
+            loss_mte = torch.tensor(0.0, device=mu.device)
+
+        # Stage 1c (2026-04-15): corrected MTE shape prior on f_visible ONLY
+        # Per Clarke 2025: MTE constrains intrinsic-growth shape/exponent, not absolute rate.
+        # Per Glazier 2005 / Kremer 2017: pelagic phyto + zooplankton have b≈0.88-0.95, weaker scaling.
+        # Apply as Pearson-correlation distance: 1 - corr(log|base|_i, target_log_r_i).
+        # Only direction is constrained — absolute rate stays free.
+        if (lam_mte_shape > 0.0 and mte_target_log_r is not None
+                and "base" in out):
+            base = out["base"]                                   # (B, T, N)
+            base_mag = base.abs().mean(dim=(0, 1))               # (N,)
+            log_base_mag = torch.log(base_mag + 1e-6)
+            target = mte_target_log_r.to(base.device)            # (N,) — NaN entries are skipped
+            mask = ~torch.isnan(target)
+            if mask.sum().item() >= 2:
+                x_m = log_base_mag[mask]
+                y_m = target[mask]
+                x_c = x_m - x_m.mean()
+                y_c = y_m - y_m.mean()
+                denom = torch.sqrt((x_c ** 2).mean() * (y_c ** 2).mean() + 1e-10)
+                corr = (x_c * y_c).mean() / denom
+                loss_mte_shape = (1.0 - corr).clamp(min=0.0)
+            else:
+                loss_mte_shape = torch.tensor(0.0, device=mu.device)
+        else:
+            loss_mte_shape = torch.tensor(0.0, device=mu.device)
+
+        # Stage 2 (2026-04-15): Klausmeier sign prior on f_visible partial derivatives
+        # 使用 finite-difference on x: ε-扰 one species j, 看 base[i] 变化方向.
+        # soft sign: penalize ReLU(-dbase_i/dx_j) for positive pairs, ReLU(dbase_i/dx_j) for negative pairs
+        if lam_stoich_sign > 0.0 and "base" in out and "visible" in out \
+                and (len(stoich_pos_pairs) > 0 or len(stoich_neg_pairs) > 0):
+            vis = out["visible"]                                 # (B, T_vis, N)
+            base_cur = out["base"]                               # (B, T_base, N)
+            T_sync = min(vis.shape[1], base_cur.shape[1])
+            vis = vis[:, :T_sync]
+            base_cur = base_cur[:, :T_sync]
+            # 效率: 56 pairs × 500 epochs 全算太慢. 每次 loss 只对 **随机采样的 1 个 j_src**
+            # 做一次 perturbed forward, 覆盖所有共享该 j_src 的 pairs. 500 epochs 自然轮询所有 j_src.
+            # 每 loss 调用只 +1 次 compute_f_visible, overhead 从 +56x 降到 +1x.
+            unique_sources = list({j for (_, j) in stoich_pos_pairs} |
+                                   {j for (_, j) in stoich_neg_pairs})
+            j_src_sample = unique_sources[torch.randint(len(unique_sources), (1,)).item()]
+            vis_p = vis.clone()
+            vis_p[..., j_src_sample] = vis_p[..., j_src_sample] * (1.0 + 0.05) + 1e-8
+            base_p = self.compute_f_visible(vis_p)
+            loss_stoich = torch.zeros((), device=mu.device)
+            n_active = 0
+            for (i_tgt, j_src) in stoich_pos_pairs:
+                if j_src == j_src_sample:
+                    dbase = base_p[..., i_tgt] - base_cur[..., i_tgt]
+                    loss_stoich = loss_stoich + F.relu(-dbase).mean()
+                    n_active += 1
+            for (i_tgt, j_src) in stoich_neg_pairs:
+                if j_src == j_src_sample:
+                    dbase = base_p[..., i_tgt] - base_cur[..., i_tgt]
+                    loss_stoich = loss_stoich + F.relu(dbase).mean()
+                    n_active += 1
+            if n_active > 0:
+                loss_stoich = loss_stoich / n_active
+        else:
+            loss_stoich = torch.tensor(0.0, device=mu.device)
+
         total = (recon_loss
                  + beta_kl * kl
                  + h_weight * lam_necessary * loss_necessary
@@ -507,7 +695,12 @@ class CVHI_Residual(nn.Module):
                  + lam_sparse * loss_sparse
                  + h_weight * lam_rollout * loss_rollout   # L1
                  + h_weight * lam_hf * loss_hf              # L3
-                 + lam_entropy * loss_entropy_reg)           # MoG anti-collapse
+                 + lam_entropy * loss_entropy_reg           # MoG anti-collapse
+                 + lam_rmse_log * loss_rmse_log             # Stage 1: amplitude
+                 + lam_mte_prior * loss_mte                  # Stage 1 [DEPRECATED]
+                 + lam_mte_shape * loss_mte_shape            # Stage 1c: MTE shape on f_visible
+                 + lam_stoich_sign * loss_stoich             # Stage 2: Klausmeier sign prior
+                 + 5.0 * lam_smooth * loss_hier_smooth)       # Hierarchical: slow-channel 强 smooth
 
         return {
             "total": total,
@@ -563,3 +756,7 @@ class CVHI_Residual(nn.Module):
                 sliced["target_log_states"] = tls[:, r_start:r_end, :, :]
                 sliced["rollout_K"] = K_r
         return sliced
+
+
+# Backward-compatible alias so existing imports still work
+CVHI_Residual = EcoGNRD

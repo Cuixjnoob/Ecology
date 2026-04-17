@@ -1,4 +1,4 @@
-"""Conditional Variational Hidden Inference (CVHI) MVP.
+"""Conditional Variational Hidden Inference (Eco-GNRD, formerly CVHI) MVP.
 
 核心思想:
   1. Posterior Encoder q(h|x_visible): GNN + Takens → (μ, log σ) per time step
@@ -456,7 +456,7 @@ class DynamicsOperator(nn.Module):
 
 
 # =============================================================================
-# Module 3: CVHI — full model
+# Module 3: Eco-GNRD (formerly CVHI) — full model
 # =============================================================================
 class CVHI(nn.Module):
     """Conditional Variational Hidden Inference with h_coarse anchor.
@@ -465,7 +465,7 @@ class CVHI(nn.Module):
     Encoder only learns (delta_mu, log_sigma) — small corrections + uncertainty.
     This combines:
       - Linear Sparse + EM's strong point estimate (Pearson ~0.977 on LV)
-      - CVHI's multi-hypothesis + uncertainty quantification
+      - Eco-GNRD's multi-hypothesis + uncertainty quantification
     """
     def __init__(
         self,

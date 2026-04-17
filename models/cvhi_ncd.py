@@ -1,4 +1,4 @@
-"""CVHI-NCD: CVHI with Species-as-Nodes GNN + Soft-Preset Form Messages.
+"""Eco-GNRD NCD: Species-as-Nodes GNN + Soft-Preset Form Messages (formerly CVHI-NCD).
 
 架构 (修订版, 2026-04-13):
   - 节点 = N visible + k hidden 物种 (GNN 本来的语义)
@@ -471,7 +471,7 @@ class SpeciesGNN_MLP(nn.Module):
         return (attn * mask).abs().mean()
 
     def hidden_to_visible_mass(self) -> torch.Tensor:
-        # N_h = 0 in CVHI_Residual usage, return 0
+        # N_h = 0 in Eco-GNRD (EcoGNRD) usage, return 0
         return torch.tensor(0.0, device=self.r.device)
 
 
@@ -528,10 +528,10 @@ class MultiLayerSpeciesGNN(nn.Module):
 
 
 # =============================================================================
-# CVHI-NCD full model
+# Eco-GNRD NCD full model (formerly CVHI-NCD)
 # =============================================================================
 class CVHI_NCD(nn.Module):
-    """CVHI with Species-GNN SoftForms dynamics."""
+    """Eco-GNRD with Species-GNN SoftForms dynamics (formerly CVHI-NCD)."""
     def __init__(
         self,
         num_visible: int,
