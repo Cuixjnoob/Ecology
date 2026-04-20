@@ -72,6 +72,10 @@ class EcoGNRD(nn.Module):
         gnn_backbone: str = "softforms",
         # ablation flags
         use_formula_hints: bool = True,   # 控制 MLP backbone 是否使用 formula hints 输入
+        use_interaction_matrix: bool = False,  # 显式可学习交互矩阵 W (N×N)
+        use_graph_learner: bool = False,  # GraphLearner: 学习静态交互图
+        gl_replace_attn: bool = False,  # GL 替代 attention
+        gl_learned_exp: bool = False,  # 可学习指数
         use_G_field: bool = True,         # 控制残差分解是否使用 G(x) 敏感度场 (False: h 直接均匀加, 不学 G)
         # event-focused loss reweighting (Exp1, 2026-04-14)
         use_event_weighting: bool = False,  # 打开后 recon loss 每个 t 乘上 w_t ∝ ||Δlog x_t||^α
@@ -99,6 +103,7 @@ class EcoGNRD(nn.Module):
         hierarchical_h: bool = False,
         # Point estimate mode: encoder outputs h directly, no sampling, no KL
         point_estimate: bool = False,
+        **kwargs,
     ):
         super().__init__()
         self.num_visible = num_visible
@@ -140,9 +145,18 @@ class EcoGNRD(nn.Module):
         self.use_G_field = use_G_field
 
         # ablation: formula hints 仅对 mlp backbone 生效
+        self.use_interaction_matrix = use_interaction_matrix
+        self.use_graph_learner = use_graph_learner
         extra_kw = {}
         if gnn_backbone == "mlp":
             extra_kw["use_formula_hints"] = use_formula_hints
+            extra_kw["hint_mode"] = kwargs.get('hint_mode', 'ecology')
+            extra_kw["use_interaction_matrix"] = use_interaction_matrix
+            extra_kw["use_graph_learner"] = use_graph_learner
+            extra_kw["gl_replace_attn"] = gl_replace_attn
+            extra_kw["gl_learned_exp"] = gl_learned_exp
+            extra_kw["gl_mode"] = kwargs.get('gl_mode', 'sigmoid')
+            extra_kw["gl_renorm_strength"] = kwargs.get('gl_renorm_strength', 0.5)
 
         # f_visible: visible-only dynamics baseline (no h input)
         self.f_visible = MultiLayerSpeciesGNN(
@@ -686,6 +700,32 @@ class EcoGNRD(nn.Module):
         else:
             loss_stoich = torch.tensor(0.0, device=mu.device)
 
+        # Causal consistency: sign(Δh × G) should match sign(residual)
+        # residual = actual - f_visible = what h*G should explain
+        # If Δh>0 and G_k>0, residual_k should also be positive (h pushes k up)
+        lam_causal = out.get('lam_causal', 0.0)
+        if lam_causal > 0 and "G" in out and h_weight > 0:
+            h_mu = out["mu"]  # (B, T)
+            G_raw = out["G"]  # (B, T, N)
+            actual_raw = out.get("actual_unsliced", out["actual"])
+            nc_g = n_recon_channels if n_recon_channels else G_raw.shape[-1]
+            G_use = G_raw[..., :nc_g]
+            # h*G prediction for each species
+            hG = h_mu.unsqueeze(-1) * G_use  # (B, T, N)
+            # Residual: what f_visible can't explain
+            base_raw = out.get("base", None)
+            if base_raw is not None:
+                T_sync = min(hG.shape[1], actual_raw.shape[1], base_raw.shape[1])
+                residual = actual_raw[:, :T_sync, :nc_g] - base_raw[:, :T_sync, :nc_g]
+                hG_sync = hG[:, :T_sync]
+                # Causal consistency: hG and residual should have same sign
+                # Penalize disagreement: ReLU(-hG * residual)
+                loss_causal = F.relu(-hG_sync * residual).mean()
+            else:
+                loss_causal = torch.tensor(0.0, device=mu.device)
+        else:
+            loss_causal = torch.tensor(0.0, device=mu.device)
+
         total = (recon_loss
                  + beta_kl * kl
                  + h_weight * lam_necessary * loss_necessary
@@ -700,7 +740,8 @@ class EcoGNRD(nn.Module):
                  + lam_mte_prior * loss_mte                  # Stage 1 [DEPRECATED]
                  + lam_mte_shape * loss_mte_shape            # Stage 1c: MTE shape on f_visible
                  + lam_stoich_sign * loss_stoich             # Stage 2: Klausmeier sign prior
-                 + 5.0 * lam_smooth * loss_hier_smooth)       # Hierarchical: slow-channel 强 smooth
+                 + 5.0 * lam_smooth * loss_hier_smooth       # Hierarchical: slow-channel 强 smooth
+                 + h_weight * lam_causal * loss_causal)      # Causal consistency
 
         return {
             "total": total,

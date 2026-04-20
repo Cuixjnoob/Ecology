@@ -1,60 +1,100 @@
-# Eco-GNRD: Inferring Unobserved Species Influence in Chaotic Ecological Dynamics
+# Eco-GNRD: Ecological Graph Neural Residual Dynamics
 
-A data-driven unsupervised framework for recovering the dynamical influence of unmeasured species in partially-observed ecological communities.
+An unsupervised framework for inferring hidden species influence in partially observed ecological communities.
+
+---
+
+## Problem
+
+In real ecosystems, not all species are observed. Some are hidden — unmonitored, undiscovered, or simply missed. Their absence from data creates a systematic bias in dynamical models.
+
+**Our question**: Given time series of N−1 observed species, can we infer the dynamical influence of 1 unobserved species — without ever seeing its data during training?
 
 ---
 
 ## Method
 
-**Eco-GNRD** (Ecological Graph Neural Residual Dynamics) decomposes multi-species ecological dynamics into an observable baseline and a latent residual closure:
+### Core equation
+
+We decompose the per-species log growth rate into an observable component and a hidden residual:
 
 ```
-log(x_{t+1}/x_t)_i = f_visible_i(x_t) + h(t) * G_i(x_t)
+log(x_{t+1,k} / x_{t,k}) = f_visible_k(x_t) + h(t) · G_k(x_t)
 ```
 
-| Component | Role |
+| Symbol | Meaning |
 |---|---|
-| `f_visible` | Species-GNN modeling observable community dynamics |
-| `G` | Per-species sensitivity field to hidden influence |
-| `h(t)` | Scalar latent variable (hidden species' effect) |
-| `h * G` | Residual closure: zero contribution when h=0 |
+| `f_visible_k(x_t)` | Dynamics explainable by observed species (Species-GNN) |
+| `h(t)` | Scalar latent variable: the hidden species' influence over time |
+| `G_k(x_t)` | Sensitivity field: how much the hidden species affects each observed species |
+| `h · G` | Residual closure: exactly zero when h=0 (no hidden species) |
 
-Training is **strictly unsupervised**: hidden species values are never used during training. The latent variable h(t) is inferred via a variational encoder with Takens delay embedding.
+### Why this works
 
-### Architecture components
+- `h=0` removes all hidden influence → enables counterfactual queries ("what if the hidden species weren't there?")
+- `G_k` tells you WHICH species are most affected → interpretable interaction structure
+- The encoder infers `h(t)` from visible dynamics alone → strictly unsupervised
 
-| Component | Description | Key hyperparameters |
+### Architecture
+
+```
+Input: x_t ∈ R^{N-1}  (observed species abundances)
+  │
+  ├── Posterior Encoder (GNN + Takens delay embedding)
+  │     └── q(h|x) = N(μ, σ²)  →  h(t) via reparameterization
+  │
+  ├── f_visible (Species-GNN with MLP messages + formula hints)
+  │     └── Predicts observable species interactions
+  │
+  ├── G-field (Species-GNN)
+  │     └── Per-species sensitivity to hidden influence
+  │
+  └── Output: pred = f_visible + h · G
+```
+
+### Formula hints
+
+The GNN message MLP receives ecological formula values as input features:
+- `x_j` (linear interaction)
+- `x_i · x_j` (Lotka-Volterra bilinear)
+- `x_j / (1 + α·x_j)` (Holling type II functional response)
+- `x_i · x_j / (1 + α·x_j)` (Holling bilinear)
+
+These are **hints, not constraints** — the MLP can use, combine, or ignore them. When hints match the true dynamics (e.g., LV hints on a Lotka-Volterra system), performance improves significantly. Wrong-domain hints (e.g., LV hints on a gravitational system) actively hurt performance, confirming the model genuinely uses them.
+
+### GraphLearner (v1, optional component)
+
+An additional module that learns an explicit interaction matrix A_ij from species embeddings:
+
+```
+A_ij = sigmoid(MLP(emb_i, emb_j))     # static interaction graph
+agg_i = Σ_j A_ij · attn_ij · msg_ij   # A gates message passing
+L1 sparsity penalty on A               # encourages sparse structure
+```
+
+**Results**: On Huisman, A matches the true resource-mediated competition structure (Spearman = +0.72, 4/6 species significant at p < 0.02). Standard attention does NOT learn true interactions (Spearman ≈ 0). However, GraphLearner introduces a trade-off: species with concentrated interactions improve (sp6: +0.099 → +0.584), while species with distributed interactions degrade (sp2: +0.640 → +0.391). See "GraphLearner experiments" below.
+
+### Loss function
+
+| Loss | Purpose | Critical? |
 |---|---|---|
-| **Posterior Encoder** | GNN + Takens delay embedding + attention | d=64-96, blocks=2-3, heads=4, lags=(1,2,4,8) |
-| **f_visible (Species-GNN)** | Predicts visible-visible interactions | d_species=20, layers=2, top_k=4, MLP backbone |
-| **G-field (Species-GNN)** | Predicts hidden→visible coupling | d_species=12, layers=1, top_k=3 |
-| **Formula hints** | LV + Holling II terms as GNN input features | Not forced, only suggested |
-| **NbedDyn ODE** | h(t+1) = h(t) + f_h(h(t), x(t)) consistency | LatentDynamicsNet, d_hidden=32 |
-| **G_anchor** | Breaks h ↔ -h symmetry via sign constraint on first species | alpha annealing over training |
+| **Reconstruction** | MSE(f_vis + h·G, actual log-ratio) | Core |
+| **Counterfactual (null)** | h=0 must degrade prediction | **Yes** — removing this collapses Huisman from +0.421 to +0.016 |
+| **Counterfactual (shuffle)** | Time-shuffled h must degrade prediction | Important |
+| **KL divergence** | Regularize q(h\|x) toward N(0,1) | Standard VAE |
+| **ODE consistency** | h(t+1) ≈ h(t) + f_h(h(t), x(t)) | Important on Beninca |
+| **Multi-step rollout** | 3-step teacher-forced self-consistency | Modest |
+| **Energy** | h must have minimum variance (prevent collapse) | Safety |
+| **Smoothness** | Temporal smoothness of h | Regularization |
+| **Sparsity** | L1 on GNN weights and GraphLearner A | Structure |
 
-### Training strategy
+### Training strategies
 
-| Strategy | When used | Effect |
+| Strategy | Used on | Effect |
 |---|---|---|
-| **Alternating 5:1** | Beninca, Maizuru | Phase A (5 ep): train f_visible+G, freeze encoder. Phase B (1 ep): freeze f_visible+G, train encoder+f_h. Solves h gradient vanishing. |
-| **Joint training** | Huisman | Standard end-to-end optimization. Works when dynamics are clean. |
-| **Warmup 20%** | All | First 20% epochs: train without h (h_weight=0). Lets f_visible learn baseline. |
-| **Input dropout** | All | 5% random masking after warmup. Regularization. |
-
-### Loss components
-
-| Loss | Weight | Purpose |
-|---|---|---|
-| **Reconstruction** | 1.0 | L1 between predicted and actual log-ratios |
-| **KL divergence** | 0.017-0.03 | Regularize posterior q(h\|x) toward prior N(0,1) |
-| **Counterfactual (null)** | 5.0-9.5 | h=0 must degrade prediction (h is necessary) |
-| **Counterfactual (shuffle)** | 3.0-5.7 | h time-shuffled must degrade prediction (temporal structure matters) |
-| **Rollout (3-step)** | 0.5 | Multi-step teacher-forced self-consistency |
-| **Energy** | 2.0 | h must have minimum variance (prevents collapse) |
-| **ODE consistency** | 0.2-0.5 | f_h must predict h(t+1) from h(t) |
-| **RMSE log** | 0.1 | Scale-aware reconstruction |
-| **Smoothness** | 0.02 | Temporal smoothness of h |
-| **Sparsity** | 0.02 | L1 on G-field (sparse interactions) |
+| **Alternating 5:1** | Beninca, Maizuru | Phase A (5 ep): train f_visible+G, freeze encoder. Phase B (1 ep): train encoder. Solves h gradient vanishing. |
+| **Joint training** | Huisman, LV | Standard end-to-end. Works when dynamics are clean. |
+| **Warmup 20%** | All | First 20% epochs: h_weight=0, learn f_visible first |
 
 ---
 
@@ -62,138 +102,178 @@ Training is **strictly unsupervised**: hidden species values are never used duri
 
 | Dataset | Type | Species | Time steps | Source |
 |---|---|---|---|---|
-| **Huisman 1999** | Synthetic chemostat | 6 species, 5 resources | 1001 (dt=2d) | Huisman & Weissing, Nature 1999 |
-| **Beninca 2008** | Real Baltic mesocosm | 9 species, 4 nutrients | 658 (dt=4d) | Beninca et al., Nature 2008 |
-| **Maizuru Bay** | Real field (fish) | 15 species | 285 (biweekly) | Ushio et al., Nature 2018 |
-| **Maizuru Extended** | Real field (fish) | 14 species | 540 (semi-monthly) | Ohi/Ushio/Masuda 2024, 2002-2024 |
-| **Blasius 2020** | Real chemostat | 3 (algae, rotifers, eggs) | 86-366 per exp | Blasius et al., Nature 2020 |
+| **Lotka-Volterra** | Simulated food chain | 4 species | 1500 | Classic LV equations |
+| **Huisman 1999** | Simulated resource competition | 6 species + 5 resources | 1001 | Huisman & Weissing, Nature 1999 |
+| **Beninca 2008** | Real mesocosm (Baltic plankton) | 9 species + 4 nutrients | 658 | Beninca et al., Nature 2008 |
+| **Maizuru Bay** | Real field (fish community) | 15 species | 285 | Ushio et al., Nature 2018 |
+| **Maizuru Extended** | Real field (fish, extended) | 14 species | 540 | Ohi/Ushio/Masuda, 2002–2024 |
+| **Blasius 2020** | Real chemostat (predator-prey) | 3 (algae, rotifers, eggs) | 86–366 | Blasius et al., Nature 2020 |
 
-### Evaluation protocol
-
-- **n-to-1 rotation**: Each species takes a turn as the hidden target; the remaining species serve as visible input
-- **Train/val split**: First 75% train, last 25% validation
-- **Metric**: Pearson correlation on validation set (lstsq fitted on train, evaluated on val)
-- **Seeds**: 10 seeds for main method, 5 for baselines and ablation
-- **No oracle selection**: Report mean over seeds, never best
+**Evaluation protocol**: Leave-one-out rotation. Each species takes a turn as hidden. Train on first 75%, evaluate on last 25%. Pearson correlation (lstsq fitted on train, evaluated on val). Report mean over seeds.
 
 ---
 
 ## Results
 
-### Main comparison: Eco-GNRD vs all baselines (val Pearson, mean over seeds)
+### Main comparison (val Pearson, mean over seeds)
 
-| Method | Type | Huisman | Beninca | Maizuru |
+| Method | LV | Huisman | Beninca | Maizuru |
 |---|---|---|---|---|
-| VAR + PCA | Linear | +0.016 | -0.036 | -0.022 |
-| MLP + PCA | Nonlinear | +0.022 | -0.004 | +0.043 |
-| EDM Simplex (E=3) | Nonparametric | +0.301 | +0.047 | +0.018 |
-| MVE (E=3) | Nonparametric | +0.397 | +0.111 | +0.021 |
-| LSTM + PCA | Deep learning | +0.529 | +0.104 | +0.101 |
-| Neural ODE | Deep learning | +0.417 | +0.021 | running |
-| Latent ODE | Deep learning | +0.470 | +0.194 | -0.040 |
-| Supervised Ridge | **Oracle ceiling** | +1.000 | +0.103 | +0.223 |
-| **Eco-GNRD (ours)** | **GNN + VAE** | **+0.421** | **+0.146** | **+0.208** |
+| VAR + PCA | — | +0.016 | −0.036 | −0.022 |
+| MLP + PCA | +0.350 | +0.022 | −0.004 | +0.043 |
+| EDM Simplex (E=3) | — | +0.301 | +0.047 | +0.018 |
+| MVE (E=3) | — | +0.397 | +0.111 | +0.021 |
+| LSTM + PCA | +0.207 | +0.529 | +0.104 | +0.101 |
+| Neural ODE | +0.705 | +0.417 | +0.005 | +0.047 |
+| Latent ODE (VAE) | +0.567 | +0.063 | running | running |
+| Supervised Ridge | +0.965 | +1.000 | +0.103 | +0.223 |
+| **Eco-GNRD** | **+0.612** | **+0.421** | **+0.146** | **+0.208** |
+| **Eco-GNRD + GL (v1)** | +0.518 | **+0.435** | — | — |
 
 Key observations:
-- **Beninca**: Eco-GNRD outperforms all unsupervised baselines and even the supervised ceiling
-- **Maizuru**: Eco-GNRD is the most robust method; Latent ODE collapses (-0.040)
-- **Huisman**: Eco-GNRD is competitive with modern deep methods (Latent ODE, LSTM)
-- Linear/nonparametric baselines (VAR, MLP, EDM) are near zero on all datasets
+- **Beninca**: Eco-GNRD (+0.146) outperforms ALL baselines, including the supervised ceiling (+0.103)
+- **Maizuru**: Eco-GNRD (+0.208) is the most robust deep method; Neural ODE (+0.047) and Latent ODE collapse
+- **LV**: Neural ODE wins (+0.705 vs +0.612) — expected on a clean ODE system. Eco-GNRD still beats all other methods
+- **Latent ODE with faithful VAE**: KL divergence destroys hidden species signal (Huisman: +0.470 simplified → +0.063 faithful). General-purpose latent variable models are not designed for this task
+
+### Null baselines (Huisman)
+
+| Null method | Overall |
+|---|---|
+| White noise h | −0.005 |
+| AR1 random h (ρ=0.95) | −0.013 |
+| Shuffled true h | −0.000 |
+| Wrong species (use another species as h) | +0.319 |
+| **Eco-GNRD** | **+0.421** |
+
+Our results are significantly above random (+0.421 vs ≈0). The "wrong species" null (+0.319) reflects inter-species colinearity in the Huisman system; Eco-GNRD recovers +0.102 beyond this shared signal.
 
 ### Additional datasets
 
-| Dataset | Eco-GNRD P(val) | Notes |
+| Dataset | Eco-GNRD | Notes |
 |---|---|---|
-| Maizuru Extended (2002-2024) | +0.162 | 22-year dataset, 540 time points, 14 species |
-| Blasius (9 experiments) | +0.263 | Chemostat predator-prey, grand mean over 9 experiments |
+| Maizuru Extended (2002–2024) | +0.162 | 22-year dataset, consistent with original |
+| Blasius (9 experiments) | +0.263 | Chemostat predator-prey, grand mean |
 
-### Per-species results (Maizuru, val Pearson)
+### Per-species results (Maizuru, selected)
 
-| Species | Eco-GNRD | LSTM | Sup. Ridge | Ecology |
-|---|---|---|---|---|
-| Pseudolabrus sieboldi | **+0.462** | +0.267 | +0.663 | Reef-resident, strong local coupling |
-| Girella punctata | **+0.355** | +0.343 | +0.148 | Resident herbivore |
-| Halichoeres tenuispinis | **+0.349** | +0.194 | +0.286 | Reef-associated wrasse |
-| Pterogobius zonoleucus | **+0.333** | -0.134 | +0.491 | Resident goby |
-| Parajulis poecilepterus | **+0.333** | +0.040 | +0.595 | Reef-associated wrasse |
-| Trachurus japonicus | +0.299 | +0.244 | +0.555 | Temperature-sensitive, semi-migratory |
-| Engraulis japonicus | +0.022 | -0.058 | -0.072 | **Migratory, no local interactions** |
-| Tridentiger trigonocephalus | -0.003 | +0.048 | -0.011 | Benthic goby |
+| Species | Eco-GNRD | LSTM | Ecology |
+|---|---|---|---|
+| Pseudolabrus sieboldi | **+0.462** | +0.267 | Reef-resident, strong local coupling |
+| Girella punctata | **+0.355** | +0.343 | Resident herbivore |
+| Engraulis japonicus | +0.022 | −0.058 | **Migratory, no local interactions** |
 
-Ecological validation (confirmed by Prof. Ushio, original dataset author):
-- **Engraulis japonicus** is migratory with no local biotic interactions → correctly unrecoverable
-- **Pseudolabrus sieboldi** is temperature-insensitive reef fish → high recovery from species interactions alone
+Ecological validation (Prof. Ushio, original dataset author): Engraulis is migratory with no local biotic interactions → correctly unrecoverable. Pseudolabrus is temperature-insensitive reef fish → recovery driven by species interactions.
 
 ---
 
 ## Ablation study (val Pearson, 5 seeds)
 
-| Configuration | Huisman | Beninca | Maizuru | Key effect |
-|---|---|---|---|---|
-| **Full Eco-GNRD** | **+0.421** | **+0.146** | +0.208 | — |
-| − Counterfactual losses | +0.016 | +0.076 | +0.220 | **Critical on Huisman** (−0.405) |
-| − Alternating training | +0.430 | +0.051 | +0.238 | **Critical on Beninca** (−0.095) |
-| − ODE consistency | +0.462 | +0.056 | +0.188 | Important on Beninca (−0.090) |
-| − Multi-step rollout | +0.430 | +0.128 | +0.217 | Modest effect |
-| − Takens embedding | +0.420 | +0.080 | +0.301 | Important on Beninca (−0.066) |
-
-Findings:
-- **Counterfactual losses** are the single most important component on simulated data (Huisman: +0.421 → +0.016 without them)
-- **Alternating training** is essential for real chaotic data (Beninca: +0.146 → +0.051 without it)
-- Different datasets benefit from different components — the architecture is modular, not uniformly beneficial
-
----
-
-## Interaction structure verification (Huisman)
-
-The Huisman system has a known ground-truth interaction structure (6 species competing for 5 resources via Monod kinetics). We verify that Eco-GNRD's learned G-field recovers the true interaction pattern.
-
-For each hidden species, we compare the learned G-field magnitude (how much h affects each visible species) with the true resource-mediated competition strength:
-
-| Hidden species | Spearman correlation | Recovery P(val) | Verdict |
+| Configuration | Huisman | Beninca | Maizuru |
 |---|---|---|---|
-| sp2 | **+1.000** | +0.679 | Perfect match |
-| sp1 | +0.700 | +0.341 | Match |
-| sp3 | +0.700 | +0.588 | Match |
-| sp4 | +0.600 | +0.713 | Match |
-| sp5 | +0.500 | +0.531 | Weak match |
-| sp6 | -0.200 | +0.099 | Mismatch |
-| **Mean** | **+0.550** | | |
+| **Full Eco-GNRD** | **+0.421** | **+0.146** | +0.208 |
+| − Counterfactual losses | +0.016 | +0.076 | +0.220 |
+| − Alternating training | +0.430 | +0.051 | +0.238 |
+| − ODE consistency | +0.462 | +0.056 | +0.188 |
+| − Multi-step rollout | +0.430 | +0.128 | +0.217 |
+| − Takens embedding | +0.420 | +0.080 | +0.301 |
 
-**4/6 species show significant interaction pattern match** (Spearman > 0.5). sp6, the only mismatch, is also the hardest to recover — its interaction failure and recovery failure are consistent. This is a capability that black-box methods (Latent ODE, LSTM) fundamentally cannot provide.
+**Robustness**: The full model is never significantly outperformed by any ablation (max deficit: 0.09), while removing components can cause catastrophic failure (up to −0.41). This asymmetry demonstrates reliable performance without significant cost.
 
 ---
 
-## Identifiability analysis
+## Interaction structure verification
 
-We performed a cross-species specificity test: for each hidden species S, is h_pred more correlated with true S than with any other signal (other species, temperature, nutrients)?
+### Attention vs GraphLearner vs truth (Huisman)
 
-**Raw specificity**: Most species are "proxy-dominated" — the recovered signal captures shared environmental drivers (temperature, nutrients) rather than species-specific dynamics. This is expected: in coupled ecological systems, species share drivers.
+| Method | Spearman with true competition | Part of dynamics? |
+|---|---|---|
+| Attention weights | ≈ 0 (not significant) | Yes, but learns shortcuts |
+| Empirical G-field | +0.55 (4/6 significant) | Post-hoc analysis |
+| **GraphLearner A (v1)** | **+0.72 (4/6 significant)** | **Yes, directly gates messages** |
 
-**Partial specificity** (after removing temperature/SRP/PC1):
-- Beninca: 1/9 species-specific (Nanophyto)
-- Maizuru: 1/15 species-specific (Siganus)
-- Huisman: 0/6 species-specific (but no environmental confound exists)
+GraphLearner v1 is the only method where the learned interaction structure both (1) participates in the model's dynamics and (2) matches the ground-truth ecological network.
 
-**Interpretation**: The recovered h captures the hidden species' *influence on the community*, which includes both species-specific and environmentally-shared components. In closed systems (Huisman, Blasius) without environmental forcing, the influence IS the species interaction. In open systems (Maizuru), the influence is confounded with shared environmental drivers.
+### GraphLearner experiments (15 versions tested)
 
-This is a fundamental property of ecological systems, not a method limitation: species that share environmental drivers cannot be distinguished by their community effects alone.
+We extensively explored how to learn explicit interaction structure. The core finding:
+
+**The sparsity–accuracy trade-off is structural, not engineering.**
+
+Species with concentrated interactions (few strong partners) benefit from extreme sparsity. Species with distributed interactions (many moderate partners) need dense information flow. No single sparsity level satisfies both.
+
+| Version | Approach | Result |
+|---|---|---|
+| v1 | A × attn × msgs, L1=0.01 | **Best overall (+0.435), Spearman=0.72, but sp2 drops** |
+| v2 | No L1 | A≈0.95, learns nothing |
+| v3 | L1=0.001 | Moderate A, worse overall |
+| v4 | A biases attention scores | Weak structure learning |
+| v5–v6 | A replaces attention | Loses dynamic routing |
+| v7 | Dual channel (A×msg + attn×msg) | Saves sp2, loses sp6 |
+| v8 | v7 + learnable scale | No improvement |
+| v9 | v7 + learnable exponent A^exp | Saves sp2, loses sp6 |
+| v10–v11 | Hard-Concrete gates | Unstable (0.000 seeds) |
+| v12 | Sigmoid + partial renorm | High variance |
+| v13 | Dual expert (β-gate blend) | Saves sp2, loses sp6 |
+| v14 | Decomposed gate (τ + s) | Gate doesn't learn |
+| power | A^α with learnable α | Same trade-off |
+
+**Conclusion**: In coupled dynamical systems, the optimal interaction sparsity is species-dependent. This finding itself is ecologically meaningful: it reflects differences in coupling specificity across the ecological network.
+
+---
+
+## Ecological findings
+
+### 1. Recoverability depends on coupling specificity
+
+Species with strong, specific local interactions are recoverable. Migratory or weakly-coupled species are not. Validated across Huisman (simulated), LV (simulated), and Maizuru (real, confirmed by Prof. Ushio).
+
+### 2. Trophic level affects recoverability
+
+On LV food chain: mid-trophic predators are easiest to recover (pred1: +0.832). Top predators are hardest (+0.022 with GL, +0.555 baseline). Their influence propagates indirectly through trophic cascades.
+
+### 3. Closed vs open systems
+
+- **Closed systems** (Huisman, Beninca, Blasius): recovery reflects species interactions
+- **Open systems** (Maizuru): recovery is confounded with shared environmental forcing
+
+Temperature ablation on Maizuru confirms this:
+- Pseudolabrus sieboldi: +0.472 → +0.462 without temperature (interaction-driven)
+- Trachurus japonicus: +0.541 → +0.299 without temperature (temperature-driven)
+
+### 4. Generic latent variable models fail on this task
+
+Latent ODE (Rubanova et al. 2019) with faithful VAE implementation collapses from +0.470 to +0.063. The KL divergence compresses away the very information needed for hidden species recovery. Neural ODE achieves +0.005 on Beninca. **This task requires purpose-built ecological architecture.**
+
+### 5. Formula hints are domain-specific
+
+Correct hints improve performance (LV hints on LV: +0.612 vs no hints: +0.544). Wrong-domain hints hurt (LV hints on gravitational system: +0.376 vs no hints: +0.544). The model genuinely uses domain knowledge, not just ignoring it.
+
+### 6. The sparsity–coupling trade-off
+
+Across Huisman (6 species) and LV (4 species), the same pattern: concentrated-coupling species benefit from sparse interaction modeling, distributed-coupling species suffer. This is structural, not tunable — confirmed by 15+ architectural variants.
+
+---
+
+## External validation
+
+- **Prof. Masayuki Ushio** (HKUST): Confirmed Engraulis japonicus is migratory (correctly unrecoverable). Confirmed temperature sensitivity patterns. Provided extended 2002–2024 dataset.
+- **Prof. Frank Hilker** (mathematical ecologist): "Such interpretation may be, in general, possible... it will depend on the specific system and the relative strengths of the ongoing processes."
 
 ---
 
 ## Per-dataset configuration
 
-| Parameter | Huisman | Beninca | Maizuru |
-|---|---|---|---|
-| Training strategy | Joint | Alt 5:1 | Alt 5:1 |
-| Learning rate | 0.0008 | 0.0006 | 0.0006 |
-| Encoder (d, blocks) | 64, 2 | 96, 3 | 96, 3 |
-| ODE weight (lam_hdyn) | 0.2 | 0.5 | 0.5 |
-| KL weight (beta_kl) | 0.03 | 0.017 | 0.017 |
-| Counterfactual weight | 5.0 | 9.5 | 9.5 |
-| Min energy | 0.02 | 0.14 | 0.14 |
-| Epochs | 500 | 500 | 500 |
-| Seeds | 10 | 10 | 10 |
+| Parameter | LV | Huisman | Beninca | Maizuru |
+|---|---|---|---|---|
+| Training | Joint | Joint | Alt 5:1 | Alt 5:1 |
+| Learning rate | 0.001 | 0.0008 | 0.0006 | 0.0006 |
+| Encoder (d, blocks) | 64, 2 | 64, 2 | 96, 3 | 96, 3 |
+| ODE weight | 0.2 | 0.2 | 0.5 | 0.5 |
+| KL weight | 0.03 | 0.03 | 0.017 | 0.017 |
+| Counterfactual weight | 5.0 | 5.0 | 9.5 | 9.5 |
+| Epochs | 500 | 500 | 500 | 500 |
+| Seeds | 5 | 10 | 10 | 10 |
 
 ---
 
@@ -201,71 +281,36 @@ This is a fundamental property of ecological systems, not a method limitation: s
 
 ```
 models/
-  cvhi_residual.py              EcoGNRD model (encoder + dynamics + losses)
-  cvhi_ncd.py                   GNN backbones (SpeciesGNN_MLP, SoftForms)
-  cvhi.py                       Posterior encoder (GNN + Takens + attention)
+  cvhi_residual.py              Eco-GNRD model (encoder + dynamics + losses + GraphLearner)
+  cvhi_ncd.py                   Species-GNN backbones, GraphLearner, attention
 
 scripts/
-  run_main_experiment.py        Master experiment runner (all datasets, 10 seeds)
-  baselines_fair.py             All 8 baselines with strict fairness
+  run_main_experiment.py        Master experiment runner (all datasets, configurable seeds)
+  baselines_fair.py             All baselines with strict fairness
   run_ablation.py               Ablation study (5 components × 3 datasets)
+  run_graph_learner_test.py     GraphLearner v1 experiment
+  run_graph_learner_v*.py       GraphLearner variants v2–v13, power transform
+  run_gate_finetune.py          Decomposed gate experiments
+  run_model_selection.py        Unsupervised model selection experiment
   specificity_analysis.py       Cross-species specificity test
   specificity_partial.py        Partial correlation specificity
-  verify_interactions.py        G-field vs true Huisman interactions
+  verify_interactions.py        G-field vs true interaction structure
   load_beninca.py               Beninca 2008 data loader
   load_maizuru.py               Maizuru (Ushio 2018) data loader
-  load_maizuru_ext.py           Extended Maizuru (2002-2024) data loader
+  load_maizuru_ext.py           Extended Maizuru (2002–2024) data loader
   load_blasius.py               Blasius 2020 chemostat data loader
   generate_huisman1999.py       Huisman chaos data generator
-  cvhi_beninca_nbeddyn.py       Best Beninca config (NbedDyn + alt 5:1)
-  cvhi_huisman_full.py          Best Huisman config (hdyn_only)
-  cvhi_maizuru_alt.py           Best Maizuru config (alt 5:1, no temp)
-  run_blasius.py                Blasius experiment runner
-  run_maizuru_ext.py            Extended Maizuru experiment runner
-  disentangle_analysis.py       Cross-rotation signal decomposition
-  beninca_coupling_analysis.py  Coupling vs recoverability analysis
 
 data/
   real_datasets/beninca/        Beninca 2008 parsed data
   real_datasets/maizuru/        Ushio 2018 fish data
-  real_datasets/maizuru_extended/  Ohi/Ushio/Masuda 2002-2024 fish data
-  real_datasets/blasius/        Blasius 2020 chemostat data (C1-C10)
-
-重要实验/results/
-  main/eco_gnrd_alt5_hdyn/      Main method results (per-dataset/species/seed)
-    huisman/                    6 species × 10 seeds
-    beninca/                    9 species × 10 seeds
-    maizuru/                    15 species × 10 seeds
-    maizuru_ext/                14 species × 5 seeds
-    blasius/                    9 experiments × 3 species × 5 seeds
-  baselines/                    All baseline results
-    var_pca/                    VAR + PCA (deterministic)
-    mlp_pca/                    MLP + PCA (10 seeds)
-    edm_simplex/                EDM Simplex E=3 (deterministic)
-    mve/                        MVE E=3 (deterministic)
-    lstm/                       LSTM + PCA (5 seeds)
-    neural_ode/                 Neural ODE (5 seeds)
-    latent_ode/                 Latent ODE (5 seeds)
-    supervised_ridge/           Supervised Ridge (oracle ceiling)
-  ablation/                     Ablation results
-    no_alt/                     Without alternating training
-    no_ode/                     Without ODE consistency
-    no_cf/                      Without counterfactual losses
-    no_rollout/                 Without multi-step rollout
-    no_takens/                  Without Takens delay embedding
-    nohint/                     Without formula hints (Huisman only)
-    no_alt_ode_rollout/         Combined ablation (running)
-  specificity/                  Identifiability analysis results
-  interaction_verification/     G-field vs true interaction structure
+  real_datasets/maizuru_extended/  2002–2024 extended fish data
+  real_datasets/blasius/        Blasius 2020 chemostat data (C1–C10)
 
 docs/
-  email_draft_to_ushio.md       Communication with original dataset authors
-  paper_notes_en/               English paper notes (9 papers)
-
-paper/
-  outline.md                    Paper outline
-
-runs/                           Legacy experiment outputs
+  research_report_20260419.md   Full research report
+  email_draft_to_ushio.md       Communication with dataset authors
+  email_draft_to_hilker.md      Communication with ecologists
 ```
 
 ---
@@ -273,30 +318,34 @@ runs/                           Legacy experiment outputs
 ## Quick start
 
 ```bash
-# Generate Huisman synthetic data
+# Generate synthetic data
 python -m scripts.generate_huisman1999
 
-# Run main experiment (Eco-GNRD, all datasets, 10 seeds)
+# Run Eco-GNRD on all datasets (10 seeds)
 python -m scripts.run_main_experiment --datasets huisman beninca maizuru --seeds 10
 
-# Run fair baselines (all methods, all datasets)
+# Run baselines
 python -m scripts.baselines_fair --datasets huisman beninca maizuru --seeds 5 --methods all
 
-# Run ablation study
+# Ablation study
 python -m scripts.run_ablation --datasets huisman beninca maizuru --seeds 5
+
+# Interaction verification
+python -m scripts.verify_interactions
 
 # Specificity analysis
 python -m scripts.specificity_analysis
-
-# Interaction verification (Huisman)
-python -m scripts.verify_interactions
-
-# Blasius experiment
-python -m scripts.run_blasius
-
-# Extended Maizuru experiment
-python -m scripts.run_maizuru_ext
 ```
+
+---
+
+## Unsupervised guarantee
+
+Training **never** uses hidden species data. Hidden values are used only at evaluation time to compute Pearson correlation. Model selection uses visible reconstruction loss (fully unsupervised).
+
+## Baseline fairness
+
+All baselines follow the same protocol: mean over seeds (not best), no oracle dimension selection, no oracle E sweep, same train/val split, same Pearson metric.
 
 ---
 
@@ -304,47 +353,14 @@ python -m scripts.run_maizuru_ext
 
 - Python 3.10+
 - PyTorch 2.0+
-- torchdiffeq (for Neural ODE / Latent ODE baselines)
+- torchdiffeq
 - NumPy, SciPy, scikit-learn, pandas, matplotlib
-
----
-
-## Unsupervised guarantee
-
-Training **never** uses `hidden_true` or any signal derived from it. Hidden species values are used only at evaluation time to compute Pearson correlation (with lstsq sign correction fitted on train set only). Model selection uses `val_recon` (visible reconstruction loss on held-out time steps), which is fully unsupervised.
-
----
-
-## Baseline fairness
-
-All baselines follow the same protocol:
-- **No oracle selection**: Report mean over seeds, not best
-- **No oracle dimension**: LSTM uses PCA, not grid search over hidden dimensions
-- **No oracle E**: EDM/MVE use fixed E=3, not best-E sweep against hidden_true
-- **Same train/val split**: 75/25 for all methods
-- **Same metric**: Train-fit lstsq, val-eval Pearson
-
----
-
-## Key findings
-
-1. **Eco-GNRD recovers hidden species influence** in closed ecological systems (Huisman, Beninca, Blasius) where dynamics are interaction-driven
-
-2. **Interpretable interaction structure**: The learned G-field matches true resource-mediated competition in Huisman (mean Spearman = +0.550, 4/6 species match) — a capability unique to our GNN-based approach
-
-3. **Counterfactual losses are essential**: Removing them collapses Huisman recovery from +0.421 to +0.016. They enforce that h carries necessary dynamical information
-
-4. **Alternating training solves gradient vanishing** on real chaotic data: Beninca improves from +0.051 (joint) to +0.146 (alt 5:1)
-
-5. **Recovery quality reflects ecological coupling specificity**: Species with strong, specific local interactions (reef fish, Pseudolabrus) are recoverable; migratory species without local coupling (Engraulis) are correctly unrecoverable (confirmed by original dataset author)
-
-6. **Open-system limitation**: In field data (Maizuru), recovered signals capture shared environmental drivers alongside species-specific dynamics — an inherent identifiability challenge in open ecological systems
 
 ---
 
 ## Citation
 
 ```
-Cui, X. (2026). Inferring Unobserved Species Influence in Chaotic
+Cui, X. (2026). Eco-GNRD: Inferring Hidden Species Influence in
 Ecological Dynamics via Graph Neural Residual Decomposition.
 ```

@@ -175,28 +175,57 @@ def neural_ode(visible, hidden, seed, epochs=200, lr=0.005, window=20, device='c
     return pearson_val(h_est, hidden[1:], train_end)
 
 
-# ===== Latent ODE =====
-class GRUEnc(nn.Module):
-    def __init__(self, n, lat, h=32):
+# ===== Latent ODE (Rubanova et al. 2019, faithful VAE implementation) =====
+class ReverseGRUEncoder(nn.Module):
+    """Reverse-time GRU encoder -> q(z_0) = N(mu, sigma^2).
+
+    Reads observations backward in time (as in original paper).
+    Outputs variational parameters mu and log_sigma for z_0.
+    """
+    def __init__(self, input_dim, latent_dim, hidden_dim=64):
         super().__init__()
-        self.gru = nn.GRU(n, h, batch_first=True)
-        self.fc = nn.Linear(h, lat)
+        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+
     def forward(self, x):
-        _, h = self.gru(x)
-        return self.fc(h.squeeze(0))
+        # x: (B, T, N) — reverse time order
+        x_rev = torch.flip(x, [1])
+        _, h = self.gru(x_rev)  # h: (1, B, hidden)
+        h = h.squeeze(0)  # (B, hidden)
+        return self.fc_mu(h), self.fc_logvar(h)
 
 
-def latent_ode(visible, hidden, seed, latent_dim=4, epochs=200, lr=0.003,
-               window=20, device='cuda'):
+class LatentODEDecoder(nn.Module):
+    """Emission network: z(t) -> x_hat(t)."""
+    def __init__(self, latent_dim, output_dim, hidden_dim=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+    def forward(self, z):
+        return self.net(z)
+
+
+def latent_ode(visible, hidden, seed, latent_dim=6, epochs=300, lr=0.003,
+               window=30, device='cuda', beta_kl=0.1):
+    """Latent ODE with VAE (Rubanova et al. 2019).
+
+    Encoder: reverse-time GRU -> q(z_0) = N(mu, sigma)
+    Dynamics: dz/dt = f(z, t) via Neural ODE
+    Decoder: z(t) -> x_hat(t) via emission MLP
+    Loss: reconstruction + beta * KL(q || p)
+    Fully unsupervised: only reconstructs visible species.
+    """
     T, N = visible.shape
     train_end = int(0.75 * T)
-    aug_dim = N + latent_dim
     x_all = torch.tensor(visible, dtype=torch.float32, device=device)
 
     torch.manual_seed(seed)
-    func = ODEFunc(aug_dim, 64).to(device)
-    encoder = GRUEnc(N, latent_dim, 32).to(device)
-    decoder = nn.Linear(aug_dim, N).to(device)
+    func = ODEFunc(latent_dim, 64).to(device)
+    encoder = ReverseGRUEncoder(N, latent_dim, 64).to(device)
+    decoder = LatentODEDecoder(latent_dim, N, 64).to(device)
     params = list(func.parameters()) + list(encoder.parameters()) + list(decoder.parameters())
     opt = torch.optim.Adam(params, lr=lr)
 
@@ -206,39 +235,63 @@ def latent_ode(visible, hidden, seed, latent_dim=4, epochs=200, lr=0.003,
         starts = np.random.choice(train_end - window, n_starts, replace=False)
         total_loss = 0
         for s in starts:
-            ctx_len = min(s + 1, 50)
-            ctx = x_all[max(0, s-ctx_len+1):s+1].unsqueeze(0)
-            z0_lat = encoder(ctx).squeeze(0)
-            z0 = torch.cat([x_all[s], z0_lat])
-            t_w = torch.linspace(0, 1, window, device=device)
-            z_traj = odeint(func, z0, t_w, method='rk4')
-            x_pred = decoder(z_traj)
-            target = x_all[s:s+window]
-            total_loss = total_loss + ((x_pred - target)**2).mean()
-        (total_loss / n_starts).backward()
-        nn.utils.clip_grad_norm_(params, 1.0); opt.step()
+            # Context: observations up to start point
+            ctx_len = min(s + 1, 60)
+            ctx = x_all[max(0, s - ctx_len + 1):s + 1].unsqueeze(0)  # (1, ctx_len, N)
 
-    func.eval(); encoder.eval()
+            # Encode: reverse-time GRU -> q(z_0)
+            mu, logvar = encoder(ctx)  # (1, latent_dim)
+            mu, logvar = mu.squeeze(0), logvar.squeeze(0)
+
+            # Reparameterization trick
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z0 = mu + eps * std  # (latent_dim,)
+
+            # Decode: ODE integration
+            t_w = torch.linspace(0, 1, window, device=device)
+            z_traj = odeint(func, z0, t_w, method='rk4')  # (window, latent_dim)
+            x_pred = decoder(z_traj)  # (window, N)
+
+            # Reconstruction loss
+            target = x_all[s:s + window]
+            recon_loss = ((x_pred - target) ** 2).mean()
+
+            # KL divergence: KL(N(mu, sigma) || N(0, 1))
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+
+            total_loss = total_loss + recon_loss + beta_kl * kl_loss
+
+        (total_loss / n_starts).backward()
+        nn.utils.clip_grad_norm_(params, 1.0)
+        opt.step()
+
+    # Extract latent trajectory over full time series
+    func.eval(); encoder.eval(); decoder.eval()
     with torch.no_grad():
         z_trajs = []
         for s in range(0, T - window + 1, window // 2):
-            ctx_len = min(s + 1, 50)
-            ctx = x_all[max(0, s-ctx_len+1):s+1].unsqueeze(0)
-            z0_lat = encoder(ctx).squeeze(0)
-            z0 = torch.cat([x_all[s], z0_lat])
-            t_w = torch.linspace(0, 1, min(window, T-s), device=device)
+            ctx_len = min(s + 1, 60)
+            ctx = x_all[max(0, s - ctx_len + 1):s + 1].unsqueeze(0)
+            mu, _ = encoder(ctx)
+            z0 = mu.squeeze(0)  # Use mean (no sampling at eval)
+            t_w = torch.linspace(0, 1, min(window, T - s), device=device)
             z_traj = odeint(func, z0, t_w, method='rk4')
-            z_trajs.append(z_traj[:, N:].cpu().numpy())
+            z_trajs.append(z_traj.cpu().numpy())
+        # Stitch overlapping windows
         latent_full = np.zeros((T, latent_dim))
         counts = np.zeros(T)
         idx = 0
         for s in range(0, T - window + 1, window // 2):
             w = min(window, T - s)
-            latent_full[s:s+w] += z_trajs[idx][:w]
-            counts[s:s+w] += 1; idx += 1
+            latent_full[s:s + w] += z_trajs[idx][:w]
+            counts[s:s + w] += 1
+            idx += 1
         counts = np.maximum(counts, 1)
         latent_full /= counts[:, None]
-    if latent_full.std() < 1e-8: return 0.0, 0.0
+
+    if latent_full.std() < 1e-8:
+        return 0.0, 0.0
     pca = PCA(n_components=1)
     pca.fit(latent_full[:train_end])
     h_est = pca.transform(latent_full).flatten()

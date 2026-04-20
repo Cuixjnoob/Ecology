@@ -345,6 +345,113 @@ class SpeciesGNN_SoftForms(nn.Module):
 # =============================================================================
 # Species GNN with PURE MLP messages (NO preset formulas)
 # =============================================================================
+class GraphLearner(nn.Module):
+    """Learn a static interaction graph from species embeddings.
+
+    Supports two modes:
+    - 'sigmoid': A_ij = sigmoid(MLP(emb_i, emb_j)), with L1 sparsity
+    - 'hard_concrete': stochastic near-binary gates (Louizos et al. 2018),
+      with L0 sparsity (penalize expected number of active edges)
+    """
+    def __init__(self, N: int, d_emb: int = 16, init_dense: bool = True,
+                 use_learned_exp: bool = False,
+                 mode: str = 'sigmoid', beta: float = 0.66,
+                 gamma: float = -0.1, zeta: float = 1.1):
+        super().__init__()
+        self.N = N
+        self.mode = mode
+        self.use_learned_exp = use_learned_exp
+        self.beta = beta
+        self.gamma = gamma
+        self.zeta = zeta
+
+        self.emb = nn.Parameter(torch.randn(N, d_emb) * 0.1)
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(2 * d_emb, 32), nn.GELU(),
+            nn.Linear(32, 1),
+        )
+        # Per-receiver row bias: allows different species to have different sparsity
+        self.row_bias = nn.Parameter(torch.zeros(N))
+
+        if init_dense and mode == 'sigmoid':
+            with torch.no_grad():
+                self.edge_mlp[-1].bias.fill_(3.0)
+        if init_dense and mode == 'hard_concrete':
+            with torch.no_grad():
+                self.edge_mlp[-1].bias.fill_(2.0)  # start well open (sigmoid(2/0.66)≈0.95)
+
+        if use_learned_exp:
+            self.exp_mlp = nn.Sequential(
+                nn.Linear(2 * d_emb, 32), nn.GELU(),
+                nn.Linear(32, 1),
+            )
+
+    def _compute_logits(self):
+        N, d = self.emb.shape
+        ei = self.emb.unsqueeze(1).expand(N, N, d)
+        ej = self.emb.unsqueeze(0).expand(N, N, d)
+        pair = torch.cat([ei, ej], dim=-1)
+        z = self.edge_mlp(pair).squeeze(-1)  # (N, N)
+        z = z + self.row_bias.unsqueeze(1)   # per-receiver bias
+        return z
+
+    def _hard_concrete_sample(self, z):
+        """Sample from Hard-Concrete distribution."""
+        z = z.clamp(-10, 10)  # prevent extreme logits
+        if self.training:
+            u = torch.rand_like(z).clamp(1e-4, 1 - 1e-4)
+            s = torch.sigmoid((torch.log(u / (1 - u)) + z) / self.beta)
+        else:
+            s = torch.sigmoid(z / self.beta)
+        s_bar = s * (self.zeta - self.gamma) + self.gamma
+        return s_bar.clamp(0, 1)
+
+    def forward(self) -> torch.Tensor:
+        z = self._compute_logits()
+
+        if self.mode == 'hard_concrete':
+            g = self._hard_concrete_sample(z)
+            self._g = g
+            self._z = z
+            return g
+        else:
+            A = torch.sigmoid(z)
+            self._A_raw = A
+            if self.use_learned_exp:
+                N, d = self.emb.shape
+                ei = self.emb.unsqueeze(1).expand(N, N, d)
+                ej = self.emb.unsqueeze(0).expand(N, N, d)
+                pair = torch.cat([ei, ej], dim=-1)
+                exp = F.softplus(self.exp_mlp(pair).squeeze(-1))
+                return A.pow(exp + 1e-6)
+            return A
+
+    def get_adjacency(self) -> 'np.ndarray':
+        """Return learned structure for inspection."""
+        with torch.no_grad():
+            if self.mode == 'hard_concrete':
+                z = self._compute_logits()
+                # P(gate != 0) as structure indicator
+                p = torch.sigmoid(z - self.beta * torch.log(torch.tensor(-self.gamma / self.zeta)))
+                return p.cpu().numpy()
+            else:
+                self.forward()
+                return self._A_raw.cpu().numpy()
+
+    def expected_L0(self) -> torch.Tensor:
+        """Expected number of non-zero gates (for L0 penalty)."""
+        z = self._compute_logits()
+        # P(g != 0) = sigmoid(z - beta * log(-gamma/zeta))
+        p = torch.sigmoid(z - self.beta * torch.log(torch.tensor(-self.gamma / self.zeta, device=z.device)))
+        return p.sum()
+
+    def l1_sparsity(self) -> torch.Tensor:
+        """L1 penalty (for sigmoid mode)."""
+        if self.mode == 'hard_concrete':
+            return self.expected_L0() / (self.N * self.N)
+        return self.forward().mean()
+
+
 class SpeciesGNN_MLP(nn.Module):
     """Species-as-nodes GNN with learnable MLP edge messages.
 
@@ -363,6 +470,13 @@ class SpeciesGNN_MLP(nn.Module):
         use_free_nn: bool = True,  # API compat
         free_nn_hidden: int = 32,  # API compat
         use_formula_hints: bool = True,  # 是否把预设公式作为 MLP 输入特征
+        hint_mode: str = 'ecology',  # 'ecology' (LV/Holling) or 'gravity' (1/r^2)
+        use_interaction_matrix: bool = False,  # 显式可学习交互矩阵 W
+        use_graph_learner: bool = False,  # GraphLearner: 学习静态交互图 A
+        gl_replace_attn: bool = False,  # True: A replaces attention; False: dual channel
+        gl_learned_exp: bool = False,  # learnable per-edge exponent for A
+        graph_learner_d: int = 16,  # GraphLearner embedding dim
+        **kwargs,
     ):
         super().__init__()
         self.num_visible = num_visible
@@ -372,6 +486,27 @@ class SpeciesGNN_MLP(nn.Module):
         self.top_k = min(top_k, N)
         self.d_species = d_species
         self.use_formula_hints = use_formula_hints
+        self.hint_mode = hint_mode
+        self.use_interaction_matrix = use_interaction_matrix
+        self.use_graph_learner = use_graph_learner
+
+        # Explicit interaction matrix W (N×N), learnable
+        if use_interaction_matrix:
+            self.W_raw = nn.Parameter(torch.zeros(N, N))
+
+        # GraphLearner: learn static adjacency from embeddings
+        self.gl_replace_attn = gl_replace_attn
+        gl_mode = kwargs.get('gl_mode', 'sigmoid')
+        self._gl_renorm_strength = kwargs.get('gl_renorm_strength', 0.5)
+        # Power transform parameter: alpha controls how much A suppresses
+        # init so softplus(-0.5)+0.05 ≈ 0.48, meaning A^0.48 (moderate compression)
+        if use_graph_learner:
+            self._gl_power = nn.Parameter(torch.tensor(-0.5))
+        if use_graph_learner:
+            self.graph_learner = GraphLearner(N, d_emb=graph_learner_d,
+                                              use_learned_exp=gl_learned_exp,
+                                              mode=gl_mode)
+            self.gl_scale = nn.Parameter(torch.tensor(1.0))  # learnable scale for structure channel
 
         # Learnable species embeddings (distinguish species identity in MLP)
         self.species_emb = nn.Parameter(0.1 * torch.randn(N, d_species))
@@ -416,13 +551,23 @@ class SpeciesGNN_MLP(nn.Module):
         feats = [xi_e, xj_e, si, sj]
 
         if self.use_formula_hints:
-            # 4 preset formula values as additional features (hints)
-            alpha = (F.softplus(self.holling_alpha_raw) + 0.01).view(1, 1, 1, N)
-            f_linear = xj_e                               # (B, T, N, N, 1)  x_j
-            f_lv = (xi * xj).unsqueeze(-1)                # x_i * x_j
-            f_holl_lin = (xj / (1 + alpha * xj)).unsqueeze(-1)          # x_j / (1+α·x_j)
-            f_holl_bi = (xi * xj / (1 + alpha * xj)).unsqueeze(-1)      # x_i·x_j / (1+α·x_j)
-            feats.extend([f_linear, f_lv, f_holl_lin, f_holl_bi])
+            if self.hint_mode == 'gravity':
+                # Gravitational hints: based on Newton's law F ~ 1/r²
+                diff = (xj - xi)  # (B, T, N, N) displacement
+                dist = (diff.abs() + 0.1)  # softened distance
+                f_diff = diff.unsqueeze(-1)                        # x_j - x_i
+                f_inv_dist = (1.0 / dist).unsqueeze(-1)            # 1/|x_j - x_i|
+                f_inv_sq = (1.0 / (dist ** 2)).unsqueeze(-1)       # 1/r²
+                f_grav = (diff / (dist ** 3)).unsqueeze(-1)         # (x_j-x_i)/r³
+                feats.extend([f_diff, f_inv_dist, f_inv_sq, f_grav])
+            else:
+                # Ecology hints: LV + Holling II
+                alpha = (F.softplus(self.holling_alpha_raw) + 0.01).view(1, 1, 1, N)
+                f_linear = xj_e                               # x_j
+                f_lv = (xi * xj).unsqueeze(-1)                # x_i * x_j
+                f_holl_lin = (xj / (1 + alpha * xj)).unsqueeze(-1)          # x_j / (1+α·x_j)
+                f_holl_bi = (xi * xj / (1 + alpha * xj)).unsqueeze(-1)      # x_i·x_j / (1+α·x_j)
+                feats.extend([f_linear, f_lv, f_holl_lin, f_holl_bi])
 
         pair = torch.cat(feats, dim=-1)  # (B, T, N, N, in_dim)
         return self.msg_mlp(pair).squeeze(-1)
@@ -442,6 +587,7 @@ class SpeciesGNN_MLP(nn.Module):
                               dim=-1)
         q = self.q_proj(feats); k = self.k_proj(feats)
         scores = torch.einsum("btnd,btmd->btnm", q, k) / (self.d_species ** 0.5)
+
         if self.top_k < N:
             tv, ti = scores.topk(self.top_k, dim=-1)
             mask = torch.full_like(scores, float("-inf"))
@@ -450,9 +596,29 @@ class SpeciesGNN_MLP(nn.Module):
         else:
             attn = F.softmax(scores, dim=-1)
 
-        agg = (attn * msgs).sum(dim=-1)
+        if self.use_graph_learner:
+            A = self.graph_learner()  # (N, N) in [0, 1]
+            # Power transform: compress range while preserving ranking
+            # alpha < 1: softens suppression (A=0.04 -> A^0.3=0.38)
+            # alpha = 1: original v1
+            alpha = F.softplus(self._gl_power) + 0.05  # learnable, > 0.05
+            A_eff = (A + 1e-8).pow(alpha)
+            agg = (A_eff.unsqueeze(0).unsqueeze(0) * attn * msgs).sum(dim=-1)
+        elif self.use_interaction_matrix:
+            W = self.W_raw
+            agg = (W.unsqueeze(0).unsqueeze(0) * attn * msgs).sum(dim=-1)
+        else:
+            agg = (attn * msgs).sum(dim=-1)
         log_ratio = self.r.view(1, 1, -1) + agg
         return log_ratio, attn
+
+    def get_interaction_matrix(self):
+        """Return the learned interaction/adjacency matrix."""
+        if self.use_graph_learner:
+            return self.graph_learner.get_adjacency()
+        if self.use_interaction_matrix:
+            return self.W_raw.detach().cpu().numpy()
+        return None
 
     # API compat stubs (no gates/forms in pure-MLP version)
     def l1_gates(self) -> torch.Tensor:
